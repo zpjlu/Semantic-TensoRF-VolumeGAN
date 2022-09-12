@@ -30,10 +30,10 @@ from torch.nn import functional as F
 from torch.utils import data
 from torchvision import transforms, utils
 from torch.utils.tensorboard import SummaryWriter
-
+from gpu_mem_track import MemTracker
 from models import make_model, DualBranchDiscriminator
 from utils.dataset import MaskDataset
-
+from tqdm import tqdm
 from utils.distributed import (
     get_rank,
     synchronize,
@@ -46,6 +46,7 @@ import functools
 from utils.inception_utils import sample_gema, prepare_inception_metrics
 from visualize.utils import color_map
 import random
+
 
 def data_sampler(dataset, shuffle, distributed):
     if distributed:
@@ -186,9 +187,11 @@ def train(args, ckpt_dir, loader, generator, discriminator, g_optim, d_optim, g_
     accum = 0.5 ** (32 / (10 * 1000))
 
     sample_z = torch.randn(args.n_sample, args.latent, device=device)
+    
+    gpu_tracker = MemTracker()
 
     print("Start Training Iterations...")
-    for idx in pbar:
+    for idx in tqdm(pbar):
         tic = time.time()
         i = idx + args.start_iter
 
@@ -242,9 +245,12 @@ def train(args, ckpt_dir, loader, generator, discriminator, g_optim, d_optim, g_
         requires_grad(discriminator, False)
 
         noise = mixing_noise(args.batch, args.latent, args.mixing, device)
+        
+        gpu_tracker.track()
         fake_img, fake_seg, fake_seg_coarse, _, _ = generator(noise, return_all=True)
-
+        gpu_tracker.track()
         fake_pred = discriminator(fake_img, fake_seg)
+        gpu_tracker.track()
         g_loss = g_nonsaturating_loss(fake_pred)
 
         # segmentation mask loss
@@ -374,10 +380,8 @@ def train(args, ckpt_dir, loader, generator, discriminator, g_optim, d_optim, g_
                     os.path.join(ckpt_dir, f'ckpt/{str(i).zfill(6)}.pt'),
                 )
 
-
 if __name__ == '__main__':
     device = 'cuda'
-
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--dataset', type=str, required=True)
@@ -410,8 +414,8 @@ if __name__ == '__main__':
     parser.add_argument('--base_layers', type=int, default=2, help="number of layers with shared coarse structure code")
     parser.add_argument('--depth_layers', type=int, default=6, help="number of layers before outputing pseudo-depth map")
     parser.add_argument('--local_channel', type=int, default=64, help="number of channels in local generators")
-    parser.add_argument('--coarse_channel', type=int, default=512, help="number of channels in coarse feature map")
-    parser.add_argument('--coarse_size', type=int, default=64, help="size of the coarse feature map and segmentation mask")
+    parser.add_argument('--coarse_channel', type=int, default=128, help="number of channels in coarse feature map")
+    parser.add_argument('--coarse_size', type=int, default=32, help="size of the coarse feature map and segmentation mask")
     parser.add_argument('--min_feat_size', type=int, default=16, help="size of downsampled feature map")
     parser.add_argument('--residual_refine', action="store_true", help="whether to use residual to refine the coarse mask")
     parser.add_argument('--detach_texture', action="store_true", help="whether to detach between depth layers and texture layers")
@@ -434,10 +438,10 @@ if __name__ == '__main__':
 
     args.distributed = n_gpu > 1
 
-    if args.distributed:
-        torch.cuda.set_device(args.local_rank)
-        torch.distributed.init_process_group(backend='nccl', init_method='env://')
-        synchronize()
+    # if args.distributed:
+    #     torch.cuda.set_device(args.local_rank)
+    #     torch.distributed.init_process_group(backend='nccl', init_method='env://')
+    #     synchronize()
 
     args.latent = 512
     args.n_mlp = 8

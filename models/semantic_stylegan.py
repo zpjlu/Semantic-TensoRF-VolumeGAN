@@ -21,8 +21,93 @@ import random
 import torch
 from torch import nn
 import torch.nn.functional as F
-
+import math
 from .utils import StyledConv, FixedStyledConv, ToRGB, PixelNorm, EqualLinear, ConvLayer, ResBlock, PositionEmbedding
+from volumegan import PointsSampling, HierarchicalSampling, Renderer, NeRFSynthesisNetwork,  interpolate_feature
+
+PI = math.pi
+
+
+class NerfSynthesis(nn.Module):
+    def __init__(self,
+                 ps_cfg=dict(num_steps=12,
+                             ray_start=0.8,
+                             ray_end=1.2,
+                             radius=1,
+                             horizontal_mean=PI/2,
+                             horizontal_stddev=0.3,
+                             vertical_mean=PI/2,
+                             vertical_stddev=0.155,
+                             camera_dist='gaussian',
+                             fov=12,  # TODO:需要根据数据集调整这一系列参数
+                             perturb_mode=None),
+                 hs_cfg=dict(clamp_mode='relu'),
+                 vr_cfg=dict(clamp_mode='relu'),
+                 fv_cfg=dict(feat_res=32,
+                             init_res=4,
+                             base_channels=128,
+                             output_channels=16,
+                             w_dim=512),
+                 embed_cfg=dict(input_dim=3,
+                                max_freq_log2=10-1,
+                                N_freqs=10),
+                 fg_cfg=dict(num_layers=4,
+                             hidden_dim=128,
+                             activation_type='lrelu'),
+                 bg_cfg=None,
+                 out_dim=128,):
+        super().__init__()
+        self.pointsampler = PointsSampling(**ps_cfg)
+        self.hierachicalsampler = HierarchicalSampling(**hs_cfg)
+        self.volumerenderer = Renderer(**vr_cfg)
+        self.nerfmlp = NeRFSynthesisNetwork(
+            fv_cfg=fv_cfg,
+            embed_cfg=embed_cfg,
+            fg_cfg=fg_cfg,
+            bg_cfg=bg_cfg,
+            out_dim=out_dim,
+        )
+
+    def forward(self, w, noise_std=0, nerf_res=32, ps_kwargs=dict()):
+        ps_results = self.pointsampler(batch_size=w.shape[0],
+                                       resolution=nerf_res,
+                                       **ps_kwargs)  # TODO:test的时候可以更新
+        nerf_synthesis_results = self.nerfmlp(wp=w,
+                                              pts=ps_results['pts'],
+                                              dirs=ps_results['ray_dirs'])
+        hs_results = self.hierachicalsampler(coarse_rgbs=nerf_synthesis_results['rgb'],
+                                             coarse_sigmas=nerf_synthesis_results['sigma'],
+                                             pts_z=ps_results['pts_z'],
+                                             ray_origins=ps_results['ray_origins'],
+                                             ray_dirs=ps_results['ray_dirs'],
+                                             noise_std=noise_std)
+        fine_nerf_synthesis_results = self.nerfmlp(wp=w,
+                                                   pts=hs_results['pts'],
+                                                   dirs=hs_results['ray_dirs'])
+        # Concat coarse and fine results
+        rgbs = torch.cat(
+            (fine_nerf_synthesis_results['rgb'], nerf_synthesis_results['rgb']), dim=-2)
+        sigmas = torch.cat(
+            (fine_nerf_synthesis_results['sigma'], nerf_synthesis_results['sigma']), dim=-2)
+        pts_z_all = torch.cat(
+            (hs_results['pts_z'], ps_results['pts_z']), dim=-2)
+        _, indices = torch.sort(pts_z_all, dim=-2)
+        rgbs = torch.gather(
+            rgbs, -2, indices.expand(-1, -1, -1, -1, rgbs.shape[-1]))
+        sigmas = torch.gather(sigmas, -2, indices)
+        pts_z_all = torch.gather(pts_z_all, -2, indices)
+        # Volume Rendering
+        render_results = self.volumerenderer(rgbs=rgbs,
+                                             sigmas=sigmas,
+                                             pts_z=pts_z_all,
+                                             noise_std=noise_std)
+        # nerf output
+        nerf_feat = render_results['rgb'].permute(0, 3, 1, 2)
+        if self.use_depth:
+            nerf_dep = render_results['depth'].permute(0, 3, 1, 2)
+        else:
+            nerf_dep = torch.zeros(nerf_feat.size(0), 1, nerf_feat.size(2), nerf_feat.size(3)).to(nerf_feat.device)
+        return nerf_feat, nerf_dep
 
 
 class LocalGenerator(nn.Module):
@@ -34,7 +119,8 @@ class LocalGenerator(nn.Module):
         self.detach_texture = detach_texture
         self.linears = nn.ModuleList()
         for _ in range(n_layers):
-            self.linears.append(StyledConv(in_channel, hidden_channel, 1, style_dim, inject_noise=False))
+            self.linears.append(StyledConv(
+                in_channel, hidden_channel, 1, style_dim, inject_noise=False))
             in_channel = hidden_channel
         self.to_feat = ToRGB(hidden_channel, out_channel, style_dim)
         if self.use_depth:
@@ -42,8 +128,8 @@ class LocalGenerator(nn.Module):
 
     def forward(self, x, latent):
         depth = torch.zeros(x.size(0), 1, x.size(2), x.size(3)).to(x.device)
-        for i,linear in enumerate(self.linears):
-            x = linear(x, latent[:,i])
+        for i, linear in enumerate(self.linears):
+            x = linear(x, latent[:, i])
             if self.use_depth and i == self.depth_layers-1:
                 depth = self.to_depth(x, None)
                 if self.detach_texture and i < self.n_layers-1:
@@ -53,8 +139,8 @@ class LocalGenerator(nn.Module):
 
 
 class RenderNet(nn.Module):
-    def __init__(self, min_size, out_size, coarse_size, in_channel, img_dim, seg_dim, style_dim, 
-                    channel_multiplier=2, blur_kernel=[1, 3, 3, 1]):
+    def __init__(self, min_size, out_size, coarse_size, in_channel, img_dim, seg_dim, style_dim,
+                 channel_multiplier=2, blur_kernel=[1, 3, 3, 1]):
         super().__init__()
         self.channels = {
             4: 512,
@@ -84,12 +170,18 @@ class RenderNet(nn.Module):
             out_channel = self.channels[cur_size]
             if cur_size//2 == coarse_size:
                 in_channel = in_channel + feat_channel
-            self.convs.append(FixedStyledConv(in_channel, out_channel, 3, style_dim, upsample=True, blur_kernel=blur_kernel))
-            self.convs.append(FixedStyledConv(out_channel, out_channel, 3, style_dim, upsample=False, blur_kernel=blur_kernel))
-            self.noises.register_buffer(f'noise_{2*i}', torch.randn(1,1,cur_size,cur_size))
-            self.noises.register_buffer(f'noise_{2*i+1}', torch.randn(1,1,cur_size,cur_size))
-            self.to_rgbs.append(ToRGB(out_channel, img_dim, style_dim, upsample=True))
-            self.to_segs.append(ToRGB(out_channel, seg_dim, style_dim, upsample=True))
+            self.convs.append(FixedStyledConv(
+                in_channel, out_channel, 3, style_dim, upsample=True, blur_kernel=blur_kernel))
+            self.convs.append(FixedStyledConv(
+                out_channel, out_channel, 3, style_dim, upsample=False, blur_kernel=blur_kernel))
+            self.noises.register_buffer(
+                f'noise_{2*i}', torch.randn(1, 1, cur_size, cur_size))
+            self.noises.register_buffer(
+                f'noise_{2*i+1}', torch.randn(1, 1, cur_size, cur_size))
+            self.to_rgbs.append(
+                ToRGB(out_channel, img_dim, style_dim, upsample=True))
+            self.to_segs.append(
+                ToRGB(out_channel, seg_dim, style_dim, upsample=True))
             in_channel = out_channel
 
     def get_noise(self, noise, randomize_noise):
@@ -97,7 +189,8 @@ class RenderNet(nn.Module):
             if randomize_noise:
                 noise = [None] * self.n_layers
             else:
-                noise = [getattr(self.noises, f"noise_{i}") for i in range(self.n_layers)]
+                noise = [getattr(self.noises, f"noise_{i}")
+                         for i in range(self.n_layers)]
         return noise
 
     def forward(self, x, noise=None, randomize_noise=False, skip_rgb=None, skip_seg=None):
@@ -121,7 +214,7 @@ class RenderNet(nn.Module):
 class SemanticGenerator(nn.Module):
     def __init__(self, size=256, style_dim=512, n_mlp=8, channel_multiplier=2,
                  blur_kernel=[1, 3, 3, 1], lr_mlp=0.01, seg_dim=2,
-                 coarse_size=64, min_feat_size=8, local_layers=10, local_channel=64, 
+                 coarse_size=64, min_feat_size=8, local_layers=10, local_channel=64,
                  coarse_channel=512, base_layers=2, depth_layers=6, residual_refine=True,
                  detach_texture=False, transparent_dims=(),
                  **kwargs):
@@ -144,35 +237,38 @@ class SemanticGenerator(nn.Module):
         self.residual_refine = residual_refine
         self.detach_texture = detach_texture
         self.transparent_dims = list(transparent_dims)
-        self.n_latent = self.base_layers + self.n_local * 2 # Default latent space
-        self.n_latent_expand = self.n_local * self.local_layers # Expanded latent space
-        print(f"n_latent: {self.n_latent}, n_latent_expand: {self.n_latent_expand}")
+        self.n_latent = self.base_layers + self.n_local * 2  # Default latent space
+        self.n_latent_expand = self.n_local * self.local_layers  # Expanded latent space
+        print(
+            f"n_latent: {self.n_latent}, n_latent_expand: {self.n_latent_expand}")
 
-        self.pos_embed = PositionEmbedding(2, self.local_channel, N_freqs=self.log_size)
+        self.pos_embed = PositionEmbedding(
+            2, self.local_channel, N_freqs=self.log_size)
         self.local_nets = nn.ModuleList()
         for i in range(0, self.n_local):
-            use_depth = i > 0 # disable pseudo-depth for background generator
-            self.local_nets.append(LocalGenerator(local_channel, coarse_channel, local_channel, style_dim, 
-                n_layers=local_layers, depth_layers=depth_layers, use_depth=use_depth, detach_texture=detach_texture))
+            use_depth = i > 0  # disable pseudo-depth for background generator   #TODO:背景不需要深度
+            # self.local_nets.append(LocalGenerator(local_channel, coarse_channel, local_channel, style_dim,
+            #                                       n_layers=local_layers, depth_layers=depth_layers, use_depth=use_depth, detach_texture=detach_texture))
+            self.local_nets.append(NerfSynthesis())
 
         self.render_net = RenderNet(min_feat_size, size, coarse_size, coarse_channel, 3, seg_dim, style_dim,
-                channel_multiplier=channel_multiplier, blur_kernel=blur_kernel)
+                                    channel_multiplier=channel_multiplier, blur_kernel=blur_kernel)
 
         layers = [PixelNorm()]
         for i in range(n_mlp):
             layers.append(
-                EqualLinear(style_dim, style_dim, 
-                    lr_mul=lr_mlp, activation='fused_lrelu')
+                EqualLinear(style_dim, style_dim,
+                            lr_mul=lr_mlp, activation='fused_lrelu')
             )
         self.style = nn.Sequential(*layers)
-
 
     def truncate_styles(self, styles, truncation, truncation_latent):
         if truncation < 1:
             style_t = []
             for style in styles:
                 style_t.append(
-                    truncation_latent + truncation * (style - truncation_latent)
+                    truncation_latent + truncation *
+                    (style - truncation_latent)
                 )
             styles = style_t
         return styles
@@ -194,16 +290,20 @@ class SemanticGenerator(nn.Module):
             if i == 0:
                 # Disable base code for background
                 if self.depth_layers > 0:
-                    latent_expanded.append( latent[:,2*i+self.base_layers].unsqueeze(1).repeat(1,self.depth_layers,1) )
+                    latent_expanded.append(
+                        latent[:, 2*i+self.base_layers].unsqueeze(1).repeat(1, self.depth_layers, 1))
                 if self.local_layers - self.depth_layers > 0:
-                    latent_expanded.append( latent[:,2*i+self.base_layers+1].unsqueeze(1).repeat(1,self.local_layers-self.depth_layers,1) )
+                    latent_expanded.append(latent[:, 2*i+self.base_layers+1].unsqueeze(
+                        1).repeat(1, self.local_layers-self.depth_layers, 1))
             else:
                 if self.base_layers > 0:
-                    latent_expanded.append(latent[:,:self.base_layers])
+                    latent_expanded.append(latent[:, :self.base_layers])
                 if self.depth_layers - self.base_layers > 0:
-                    latent_expanded.append( latent[:,2*i+self.base_layers].unsqueeze(1).repeat(1,self.depth_layers-self.base_layers,1) )
+                    latent_expanded.append(latent[:, 2*i+self.base_layers].unsqueeze(
+                        1).repeat(1, self.depth_layers-self.base_layers, 1))
                 if self.local_layers - self.depth_layers > 0:
-                    latent_expanded.append( latent[:,2*i+self.base_layers+1].unsqueeze(1).repeat(1,self.local_layers-self.depth_layers,1) )
+                    latent_expanded.append(latent[:, 2*i+self.base_layers+1].unsqueeze(
+                        1).repeat(1, self.local_layers-self.depth_layers, 1))
         latent_expanded = torch.cat(latent_expanded, 1)
         return latent_expanded
 
@@ -235,12 +335,13 @@ class SemanticGenerator(nn.Module):
                         latent1_ = latent2_ = styles[1][j]
                     latent1.append(latent1_)
                     latent2.append(latent2_)
-                latent1 = torch.stack(latent1) # N x style_dim
-                latent2 = torch.stack(latent2) # N x style_dim
+                latent1 = torch.stack(latent1)  # N x style_dim
+                latent2 = torch.stack(latent2)  # N x style_dim
                 latent.append(latent1.unsqueeze(1))
                 latent.append(latent2.unsqueeze(1))
-            latent = torch.cat(latent, 1) # N x n_latent x style_dim
-        latent = self.expand_latents(latent) # N  x (n_local x local_layers) x style_dim
+            latent = torch.cat(latent, 1)  # N x n_latent x style_dim
+        # N  x (n_local x local_layers) x style_dim
+        latent = self.expand_latents(latent)
         return latent
 
     def composite(self, feats, depths, mask=None):
@@ -253,22 +354,27 @@ class SemanticGenerator(nn.Module):
             seg = seg * mask
             seg = seg / (seg.sum(1, keepdim=True)+1e-8)
         if len(self.transparent_dims) > 0:
-            coefs = torch.tensor([0. if i in self.transparent_dims else 1. for i in range(self.seg_dim)]).view(1,-1,1,1).to(seg.device)
-            seg_normal = seg * coefs # zero out transparent classes
-            seg_normal = seg_normal / (seg_normal.sum(1, keepdim=True)+1e-8)  # re-normalize the feature map
+            coefs = torch.tensor([0. if i in self.transparent_dims else 1. for i in range(
+                self.seg_dim)]).view(1, -1, 1, 1).to(seg.device)
+            seg_normal = seg * coefs  # zero out transparent classes
+            # re-normalize the feature map
+            seg_normal = seg_normal / (seg_normal.sum(1, keepdim=True)+1e-8)
 
-            coefs = torch.tensor([1. if i in self.transparent_dims else 0. for i in range(self.seg_dim)]).view(1,-1,1,1).to(seg.device)
-            seg_trans = seg * coefs # zero out non-transparent classes
+            coefs = torch.tensor([1. if i in self.transparent_dims else 0. for i in range(
+                self.seg_dim)]).view(1, -1, 1, 1).to(seg.device)
+            seg_trans = seg * coefs  # zero out non-transparent classes
 
             weights = seg_normal + seg_trans
         else:
             weights = seg
-        feat = sum([feats[i]*weights[:,i:i+1] for i in range(self.seg_dim)])
+        feat = sum([feats[i]*weights[:, i:i+1] for i in range(self.seg_dim)])
         return feat, seg
 
     def make_coords(self, b, h, w, device):
-        x_channel = torch.linspace(-1, 1, w, device=device).view(1, 1, 1, -1).repeat(b, 1, w, 1)
-        y_channel = torch.linspace(-1, 1, h, device=device).view(1, 1, -1, 1).repeat(b, 1, 1, h)
+        x_channel = torch.linspace(-1, 1, w, device=device).view(1,
+                                                                 1, 1, -1).repeat(b, 1, w, 1)
+        y_channel = torch.linspace(-1, 1, h, device=device).view(1,
+                                                                 1, -1, 1).repeat(b, 1, 1, h)
         return torch.cat((x_channel, y_channel), dim=1)
 
     def forward(self,
@@ -289,11 +395,12 @@ class SemanticGenerator(nn.Module):
             latent = [self.style(s) for s in latent]
 
         latent = self.truncate_styles(latent, truncation, truncation_latent)
-        latent = self.mix_styles(latent) # expanded latent code
+        latent = self.mix_styles(latent)  # expanded latent code
 
         # Position Embedding
         if coords is None:
-            coords = self.make_coords(latent.shape[0], self.coarse_size, self.coarse_size, latent.device)
+            coords = self.make_coords(
+                latent.shape[0], self.coarse_size, self.coarse_size, latent.device)
             coords = [coords.clone() for _ in range(self.n_local)]
 
         # Local Generators
@@ -301,17 +408,19 @@ class SemanticGenerator(nn.Module):
         depths = []
         for i in range(self.n_local):
             x = self.pos_embed(coords[i])
-            local_latent = latent[:,i*self.local_layers:(i+1)*self.local_layers]
-            feat, depth = self.local_nets[i](x, local_latent)
+            local_latent = latent[:, i *
+                                  self.local_layers:(i+1)*self.local_layers]                                
+            feat, depth = self.local_nets[i](local_latent)
             feats.append(feat)
             depths.append(depth)
 
         # Composition and render
         feat, seg_coarse = self.composite(feats, depths, mask=composition_mask)
-        seg_coarse = 2*seg_coarse-1 # normalize to [-1,1]
+        seg_coarse = 2*seg_coarse-1  # normalize to [-1,1]
 
         skip_seg = seg_coarse if self.residual_refine else None
-        rgb, seg = self.render_net(feat, noise=noise, randomize_noise=randomize_noise, skip_rgb=None, skip_seg=skip_seg)
+        rgb, seg = self.render_net(
+            feat, noise=noise, randomize_noise=randomize_noise, skip_rgb=None, skip_seg=skip_seg)
 
         if return_latents:
             return rgb, latent
@@ -339,7 +448,8 @@ class DualBranchDiscriminator(nn.Module):
             1024: 16 * channel_multiplier,
         }
         log_size = int(math.log(img_size, 2))
-        if seg_size is None:  seg_size = img_size
+        if seg_size is None:
+            seg_size = img_size
 
         convs = [ConvLayer(img_dim, self.channels[img_size], 1)]
         in_channel = self.channels[img_size]
@@ -363,7 +473,8 @@ class DualBranchDiscriminator(nn.Module):
 
         self.final_conv = ConvLayer(in_channel + 1, self.channels[4], 3)
         self.final_linear = nn.Sequential(
-            EqualLinear(self.channels[4] * 4 * 4, self.channels[4], activation='fused_lrelu'),
+            EqualLinear(self.channels[4] * 4 * 4,
+                        self.channels[4], activation='fused_lrelu'),
             EqualLinear(self.channels[4], 1),
         )
 
