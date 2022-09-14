@@ -30,14 +30,16 @@ PI = math.pi
 
 class NerfSynthesis(nn.Module):
     def __init__(self,
+                 use_depth,
+                 depth_layers,
                  ps_cfg=dict(num_steps=12,
-                             ray_start=0.8,
-                             ray_end=1.2,
+                             ray_start=0.88,
+                             ray_end=1.12,
                              radius=1,
                              horizontal_mean=PI/2,
                              horizontal_stddev=0.3,
                              vertical_mean=PI/2,
-                             vertical_stddev=0.155,
+                             vertical_stddev=0.15,
                              camera_dist='gaussian',
                              fov=12,  # TODO:需要根据数据集调整这一系列参数
                              perturb_mode=None),
@@ -57,10 +59,12 @@ class NerfSynthesis(nn.Module):
                  bg_cfg=None,
                  out_dim=128,):
         super().__init__()
+        self.use_depth = use_depth
         self.pointsampler = PointsSampling(**ps_cfg)
         self.hierachicalsampler = HierarchicalSampling(**hs_cfg)
         self.volumerenderer = Renderer(**vr_cfg)
         self.nerfmlp = NeRFSynthesisNetwork(
+            depth_layers,
             fv_cfg=fv_cfg,
             embed_cfg=embed_cfg,
             fg_cfg=fg_cfg,
@@ -68,10 +72,7 @@ class NerfSynthesis(nn.Module):
             out_dim=out_dim,
         )
 
-    def forward(self, w, noise_std=0, nerf_res=32, ps_kwargs=dict()):
-        ps_results = self.pointsampler(batch_size=w.shape[0],
-                                       resolution=nerf_res,
-                                       **ps_kwargs)  # TODO:test的时候可以更新
+    def forward(self, w, ps_results, noise_std=0):
         nerf_synthesis_results = self.nerfmlp(wp=w,
                                               pts=ps_results['pts'],
                                               dirs=ps_results['ray_dirs'])
@@ -106,7 +107,8 @@ class NerfSynthesis(nn.Module):
         if self.use_depth:
             nerf_dep = render_results['depth'].permute(0, 3, 1, 2)
         else:
-            nerf_dep = torch.zeros(nerf_feat.size(0), 1, nerf_feat.size(2), nerf_feat.size(3)).to(nerf_feat.device)
+            nerf_dep = torch.zeros(nerf_feat.size(0), 1, nerf_feat.size(
+                2), nerf_feat.size(3)).to(nerf_feat.device)
         return nerf_feat, nerf_dep
 
 
@@ -217,6 +219,17 @@ class SemanticGenerator(nn.Module):
                  coarse_size=64, min_feat_size=8, local_layers=10, local_channel=64,
                  coarse_channel=512, base_layers=2, depth_layers=6, residual_refine=True,
                  detach_texture=False, transparent_dims=(),
+                 ps_cfg=dict(num_steps=12,
+                             ray_start=0.88,
+                             ray_end=1.12,
+                             radius=1,
+                             horizontal_mean=PI/2,
+                             horizontal_stddev=0.3,
+                             vertical_mean=PI/2,
+                             vertical_stddev=0.15,
+                             camera_dist='gaussian',
+                             fov=12,  # TODO:需要根据数据集调整这一系列参数
+                             perturb_mode=None),
                  **kwargs):
         super().__init__()
 
@@ -249,7 +262,7 @@ class SemanticGenerator(nn.Module):
             use_depth = i > 0  # disable pseudo-depth for background generator   #TODO:背景不需要深度
             # self.local_nets.append(LocalGenerator(local_channel, coarse_channel, local_channel, style_dim,
             #                                       n_layers=local_layers, depth_layers=depth_layers, use_depth=use_depth, detach_texture=detach_texture))
-            self.local_nets.append(NerfSynthesis())
+            self.local_nets.append(NerfSynthesis(use_depth, self.depth_layers))
 
         self.render_net = RenderNet(min_feat_size, size, coarse_size, coarse_channel, 3, seg_dim, style_dim,
                                     channel_multiplier=channel_multiplier, blur_kernel=blur_kernel)
@@ -261,6 +274,8 @@ class SemanticGenerator(nn.Module):
                             lr_mul=lr_mlp, activation='fused_lrelu')
             )
         self.style = nn.Sequential(*layers)
+
+        self.pointsampler = PointsSampling(**ps_cfg)
 
     def truncate_styles(self, styles, truncation, truncation_latent):
         if truncation < 1:
@@ -389,6 +404,8 @@ class SemanticGenerator(nn.Module):
                 return_latents=False,
                 return_coarse=False,
                 return_all=False,
+                ps_kwargs=dict(),
+                nerf_res=32
                 ):
 
         if not input_is_latent:
@@ -397,20 +414,24 @@ class SemanticGenerator(nn.Module):
         latent = self.truncate_styles(latent, truncation, truncation_latent)
         latent = self.mix_styles(latent)  # expanded latent code
 
+        ps_results = self.pointsampler(batch_size=latent.shape[0],
+                                       resolution=nerf_res,
+                                       **ps_kwargs)  # TODO:test的时候可以更新
+
         # Position Embedding
-        if coords is None:
-            coords = self.make_coords(
-                latent.shape[0], self.coarse_size, self.coarse_size, latent.device)
-            coords = [coords.clone() for _ in range(self.n_local)]
+        # if coords is None:
+        #     coords = self.make_coords(
+        #         latent.shape[0], self.coarse_size, self.coarse_size, latent.device)
+        #     coords = [coords.clone() for _ in range(self.n_local)]
 
         # Local Generators
         feats = []
         depths = []
         for i in range(self.n_local):
-            x = self.pos_embed(coords[i])
+            # x = self.pos_embed(coords[i])
             local_latent = latent[:, i *
-                                  self.local_layers:(i+1)*self.local_layers]                                
-            feat, depth = self.local_nets[i](local_latent)
+                                  self.local_layers:(i+1)*self.local_layers]
+            feat, depth = self.local_nets[i](local_latent, ps_results)
             feats.append(feat)
             depths.append(depth)
 

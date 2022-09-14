@@ -410,9 +410,9 @@ if __name__ == '__main__':
     parser.add_argument('--aug', action='store_true', help='augmentation')
 
     # Semantic StyleGAN
-    parser.add_argument('--local_layers', type=int, default=10, help="number of layers in local generators")
-    parser.add_argument('--base_layers', type=int, default=2, help="number of layers with shared coarse structure code")
-    parser.add_argument('--depth_layers', type=int, default=6, help="number of layers before outputing pseudo-depth map")
+    parser.add_argument('--local_layers', type=int, default=4, help="number of layers in local generators")
+    parser.add_argument('--base_layers', type=int, default=1, help="number of layers with shared coarse structure code")
+    parser.add_argument('--depth_layers', type=int, default=3, help="number of layers before outputing pseudo-depth map")
     parser.add_argument('--local_channel', type=int, default=64, help="number of channels in local generators")
     parser.add_argument('--coarse_channel', type=int, default=128, help="number of channels in coarse feature map")
     parser.add_argument('--coarse_size', type=int, default=32, help="size of the coarse feature map and segmentation mask")

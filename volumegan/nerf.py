@@ -12,6 +12,7 @@ from third_party.stylegan2_official_ops import conv2d_gradfix
 
 class NeRFSynthesisNetwork(nn.Module):
     def __init__(self,
+                 depth_layers,
                  fv_cfg=dict(feat_res=32,
                              init_res=4,
                              base_channels=512//2,
@@ -30,7 +31,7 @@ class NeRFSynthesisNetwork(nn.Module):
         super().__init__()
         self.fg_cfg = fg_cfg
         self.bg_cfg = bg_cfg
-
+        self.depth_layers = depth_layers
         self.fv = FeatureVolume(**fv_cfg)
         self.fv_cfg = fv_cfg
 
@@ -74,7 +75,7 @@ class NeRFSynthesisNetwork(nn.Module):
                                        use_wscale=True,
                                        wscale_gain=1,
                                        lr_mul=1,
-                                       activation_type='linear')                                       
+                                       activation_type='linear')
 
     def init_weights(self,):
         pass
@@ -142,9 +143,14 @@ class NeRFSynthesisNetwork(nn.Module):
             else:
                 lw = wp
             x, style = fg_mlp(x, lw, fused_modulate=fused_modulate, impl=impl)
+            if mlp_idx == (self.depth_layers - 1):
+                feat_density = rearrange(
+                    x, 'bs c (nump numd) 1 -> (bs nump numd) c', numd=numd).contiguous()
+                fg_density = self.fg_density(feat_density)
+
         fg_feat = rearrange(
             x, 'bs c (nump numd) 1 -> (bs nump numd) c', numd=numd).contiguous()
-        fg_density = self.fg_density(fg_feat)
+        # fg_density = self.fg_density(fg_feat)
         fg_color = self.fg_color(fg_feat)
 
         fg_density = rearrange(
@@ -518,7 +524,7 @@ class ModulateConvLayer(nn.Module):
                 runtime_gain=1.0,
                 noise_mode='const',
                 fused_modulate=False,
-                impl='cuda'): 
+                impl='cuda'):
         dtype = x.dtype
         N, C, H, W = x.shape
 
