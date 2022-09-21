@@ -30,7 +30,6 @@ PI = math.pi
 
 class NerfSynthesis(nn.Module):
     def __init__(self,
-                 use_depth,
                  depth_layers,
                  ps_cfg=dict(num_steps=12,
                              ray_start=0.88,
@@ -59,7 +58,6 @@ class NerfSynthesis(nn.Module):
                  bg_cfg=None,
                  out_dim=128,):
         super().__init__()
-        self.use_depth = use_depth
         self.pointsampler = PointsSampling(**ps_cfg)
         self.hierachicalsampler = HierarchicalSampling(**hs_cfg)
         self.volumerenderer = Renderer(**vr_cfg)
@@ -104,20 +102,16 @@ class NerfSynthesis(nn.Module):
                                              noise_std=noise_std)
         # nerf output
         nerf_feat = render_results['rgb'].permute(0, 3, 1, 2)
-        if self.use_depth:
-            nerf_dep = render_results['depth'].permute(0, 3, 1, 2)
-        else:
-            nerf_dep = torch.zeros(nerf_feat.size(0), 1, nerf_feat.size(
-                2), nerf_feat.size(3)).to(nerf_feat.device)
-        return nerf_feat, nerf_dep
+
+        return nerf_feat
 
 
 class LocalGenerator(nn.Module):
-    def __init__(self, in_channel, out_channel, hidden_channel, style_dim, n_layers=8, depth_layers=8, use_depth=False, detach_texture=False):
+    def __init__(self, in_channel, out_channel, hidden_channel, style_dim, n_layers=8, depth_layers=8, use_mask=True, detach_texture=False):
         super().__init__()
         self.n_layers = n_layers
         self.depth_layers = depth_layers
-        self.use_depth = use_depth
+        self.use_mask = use_mask
         self.detach_texture = detach_texture
         self.linears = nn.ModuleList()
         for _ in range(n_layers):
@@ -125,19 +119,19 @@ class LocalGenerator(nn.Module):
                 in_channel, hidden_channel, 1, style_dim, inject_noise=False))
             in_channel = hidden_channel
         self.to_feat = ToRGB(hidden_channel, out_channel, style_dim)
-        if self.use_depth:
-            self.to_depth = ToRGB(hidden_channel, 1, style_dim)
+        if self.use_mask:
+            self.to_depth = ToRGB(hidden_channel, 13, style_dim)
 
     def forward(self, x, latent):
-        depth = torch.zeros(x.size(0), 1, x.size(2), x.size(3)).to(x.device)
+        mask = torch.zeros(x.size(0), 13, x.size(2), x.size(3)).to(x.device)
         for i, linear in enumerate(self.linears):
             x = linear(x, latent[:, i])
-            if self.use_depth and i == self.depth_layers-1:
-                depth = self.to_depth(x, None)
+            if self.use_mask and i == self.depth_layers-1:
+                mask = self.to_depth(x, None)
                 if self.detach_texture and i < self.n_layers-1:
                     x = x.detach()
         feat = self.to_feat(x, None)
-        return feat, depth
+        return feat, mask
 
 
 class RenderNet(nn.Module):
@@ -257,16 +251,16 @@ class SemanticGenerator(nn.Module):
 
         self.pos_embed = PositionEmbedding(
             2, self.local_channel, N_freqs=self.log_size)
-        self.local_nets = nn.ModuleList()
-        for i in range(0, self.n_local):
-            use_depth = i > 0  # disable pseudo-depth for background generator   #TODO:背景不需要深度
-            # self.local_nets.append(LocalGenerator(local_channel, coarse_channel, local_channel, style_dim,
-            #                                       n_layers=local_layers, depth_layers=depth_layers, use_depth=use_depth, detach_texture=detach_texture))
-            self.local_nets.append(NerfSynthesis(use_depth, self.depth_layers))
+        # self.local_net = NerfSynthesis(self.depth_layers)
+        # for i in range(0, self.n_local):
+        #     use_depth = i > 0  # disable pseudo-depth for background generator   #TODO:背景不需要深度
+        self.local_net = LocalGenerator(local_channel, coarse_channel, local_channel, style_dim,
+                                                n_layers=local_layers, depth_layers=depth_layers, use_mask=True, detach_texture=detach_texture)
+        #     self.local_nets.append(NerfSynthesis(use_depth, self.depth_layers))
 
         self.render_net = RenderNet(min_feat_size, size, coarse_size, coarse_channel, 3, seg_dim, style_dim,
                                     channel_multiplier=channel_multiplier, blur_kernel=blur_kernel)
-
+        self.to_seg = ToRGB(32, 13, style_dim)
         layers = [PixelNorm()]
         for i in range(n_mlp):
             layers.append(
@@ -414,29 +408,22 @@ class SemanticGenerator(nn.Module):
         latent = self.truncate_styles(latent, truncation, truncation_latent)
         latent = self.mix_styles(latent)  # expanded latent code
 
-        ps_results = self.pointsampler(batch_size=latent.shape[0],
-                                       resolution=nerf_res,
-                                       **ps_kwargs)  # TODO:test的时候可以更新
+        # ps_results = self.pointsampler(batch_size=latent.shape[0],
+        #                                resolution=nerf_res,
+        #                                **ps_kwargs)  # TODO:test的时候可以更新
 
         # Position Embedding
-        # if coords is None:
-        #     coords = self.make_coords(
-        #         latent.shape[0], self.coarse_size, self.coarse_size, latent.device)
-        #     coords = [coords.clone() for _ in range(self.n_local)]
+        if coords is None:
+            coord = self.make_coords(
+                latent.shape[0], self.coarse_size, self.coarse_size, latent.device)
+            # coords = [coords.clone() for _ in range(self.n_local)]
 
         # Local Generators
         feats = []
         depths = []
-        for i in range(self.n_local):
-            # x = self.pos_embed(coords[i])
-            local_latent = latent[:, i *
-                                  self.local_layers:(i+1)*self.local_layers]
-            feat, depth = self.local_nets[i](local_latent, ps_results)
-            feats.append(feat)
-            depths.append(depth)
-
-        # Composition and render
-        feat, seg_coarse = self.composite(feats, depths, mask=composition_mask)
+        x = self.pos_embed(coord)
+        feat, seg_coarse= self.local_net(x, latent)
+        # seg_coarse = self.to_seg(feat, None)
         seg_coarse = 2*seg_coarse-1  # normalize to [-1,1]
 
         skip_seg = seg_coarse if self.residual_refine else None

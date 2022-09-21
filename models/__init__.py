@@ -16,8 +16,9 @@
 # OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 
 import pprint
+from symbol import import_from
 from .semantic_stylegan import SemanticGenerator, DualBranchDiscriminator
-
+from .utils import ToRGB
 def make_model(args, verbose=True):
     if verbose:
         print(f"Initializing model with arguments:")

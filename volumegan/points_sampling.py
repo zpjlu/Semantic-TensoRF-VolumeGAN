@@ -6,8 +6,8 @@ import numpy as np
 import math
 import random
 
-from .utils import normalize_vecs
-from .utils import truncated_normal
+from .tools import normalize_vecs
+from .tools import truncated_normal
 
 __all__ = ['PointsSampling', 'sample_pts_in_cam_coord', 'sample_cam_positions', 'trans_pts_cam2world', 'create_cam2world_matrix', 'perturb_points']
 _CAMERA_DIST = ['uniform', 'normal', 'gaussian', 'hybrid', 'truncated_gaussian', 'spherial_uniform']

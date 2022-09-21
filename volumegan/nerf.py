@@ -12,7 +12,6 @@ from third_party.stylegan2_official_ops import conv2d_gradfix
 
 class NeRFSynthesisNetwork(nn.Module):
     def __init__(self,
-                 depth_layers,
                  fv_cfg=dict(feat_res=32,
                              init_res=4,
                              base_channels=512//2,
@@ -31,57 +30,57 @@ class NeRFSynthesisNetwork(nn.Module):
         super().__init__()
         self.fg_cfg = fg_cfg
         self.bg_cfg = bg_cfg
-        self.depth_layers = depth_layers
+
         self.fv = FeatureVolume(**fv_cfg)
         self.fv_cfg = fv_cfg
 
         self.fg_embedder = Embedder(**embed_cfg)
 
-        input_dim = self.fg_embedder.out_dim + self.fv_cfg['output_channels']*3
+        input_dim = self.fg_embedder.out_dim + self.fv_cfg['output_channels']
 
         self.fg_mlps = self.build_mlp(input_dim=input_dim, **fg_cfg)
         self.fg_density = DenseLayer(in_channels=fg_cfg['hidden_dim'],
-                                     out_channels=1,
-                                     add_bias=True,
-                                     init_bias=0.0,
-                                     use_wscale=True,
-                                     wscale_gain=1,
-                                     lr_mul=1,
-                                     activation_type='linear')
+                                           out_channels=1,
+                                           add_bias=True,
+                                           init_bias=0.0,
+                                           use_wscale=True,
+                                           wscale_gain=1,
+                                           lr_mul=1,
+                                           activation_type='linear')
         self.fg_color = DenseLayer(in_channels=fg_cfg['hidden_dim'],
-                                   out_channels=out_dim,
-                                   add_bias=True,
-                                   init_bias=0.0,
-                                   use_wscale=True,
-                                   wscale_gain=1,
-                                   lr_mul=1,
-                                   activation_type='linear')
+                                             out_channels=out_dim,
+                                             add_bias=True,
+                                             init_bias=0.0,
+                                             use_wscale=True,
+                                             wscale_gain=1,
+                                             lr_mul=1,
+                                             activation_type='linear')
         if self.bg_cfg:
             self.bg_embedder = Embedder(**bg_cfg.embed_cfg)
             input_dim = self.bg_embedder.out_dim
             self.bg_mlps = self.build_mlp(input_dim, **bg_cfg)
             self.bg_density = DenseLayer(in_channels=bg_cfg['hidden_dim'],
-                                         out_channels=1,
-                                         add_bias=True,
-                                         init_bias=0.0,
-                                         use_wscale=True,
-                                         wscale_gain=1,
-                                         lr_mul=1,
-                                         activation_type='linear')
+                                                   out_channels=1,
+                                                   add_bias=True,
+                                                   init_bias=0.0,
+                                                   use_wscale=True,
+                                                   wscale_gain=1,
+                                                   lr_mul=1,
+                                                   activation_type='linear')
             self.bg_color = DenseLayer(in_channels=bg_cfg['hidden_dim'],
-                                       out_channels=out_dim,
-                                       add_bias=True,
-                                       init_bias=0.0,
-                                       use_wscale=True,
-                                       wscale_gain=1,
-                                       lr_mul=1,
-                                       activation_type='linear')
+                                                 out_channels=out_dim,
+                                                 add_bias=True,
+                                                 init_bias=0.0,
+                                                 use_wscale=True,
+                                                 wscale_gain=1,
+                                                 lr_mul=1,
+                                                 activation_type='linear')
 
     def init_weights(self,):
         pass
 
     def build_mlp(self, input_dim, num_layers, hidden_dim, activation_type, **kwargs):
-        default_conv_cfg = dict(resolution=64,
+        default_conv_cfg = dict(resolution=32,
                                 w_dim=512,
                                 kernel_size=1,
                                 add_bias=True,
@@ -108,16 +107,16 @@ class NeRFSynthesisNetwork(nn.Module):
 
         return mlp_list
 
+
     def forward(self, wp, pts, dirs, fused_modulate=False, impl='cuda'):
 
         hi, wi = pts.shape[1:3]
         fg_pts = rearrange(pts, 'bs h w d c -> bs (h w) d c').contiguous()
-        w = wp
+        w = wp              
         # pts: bs, h*h, d, 3
         fg_pts_embed = self.fg_embedder(fg_pts)
         bs, nump, numd, c = fg_pts_embed.shape
-        fg_pts_embed = rearrange(
-            fg_pts_embed, 'bs nump numd c -> bs c (nump numd) 1').contiguous()
+        fg_pts_embed = rearrange(fg_pts_embed, 'bs nump numd c -> bs c (nump numd) 1').contiguous()
         x = fg_pts_embed
 
         # feature volume
@@ -125,15 +124,15 @@ class NeRFSynthesisNetwork(nn.Module):
             fvw = w[:, 0]
         else:
             fvw = w
-        plane, line = self.fv(fvw)
+        volume = self.fv(fvw)
         # interpolate features from feature volume
         # point features: batch_size, num_channel, num_point
         bounds = self.fv_cfg.get('bounds', [[-0.1886, -0.1671, -0.1956],
-                                            [0.1887, 0.1692, 0.1872]])
+                               [0.1887, 0.1692, 0.1872]])
         bounds = torch.Tensor(bounds).to(pts)
 
         fg_pts_sam = rearrange(fg_pts, 'bs nump numd c -> bs (nump numd) c')
-        input_f = interpolate_feature(fg_pts_sam, plane, line, bounds)
+        input_f = interpolate_feature(fg_pts_sam, volume, bounds)
         input_f = rearrange(input_f, 'bs c numd -> bs c numd 1')
         x = torch.cat([input_f, x], dim=1)
 
@@ -143,20 +142,12 @@ class NeRFSynthesisNetwork(nn.Module):
             else:
                 lw = wp
             x, style = fg_mlp(x, lw, fused_modulate=fused_modulate, impl=impl)
-            if mlp_idx == (self.depth_layers - 1):
-                feat_density = rearrange(
-                    x, 'bs c (nump numd) 1 -> (bs nump numd) c', numd=numd).contiguous()
-                fg_density = self.fg_density(feat_density)
-
-        fg_feat = rearrange(
-            x, 'bs c (nump numd) 1 -> (bs nump numd) c', numd=numd).contiguous()
-        # fg_density = self.fg_density(fg_feat)
+        fg_feat = rearrange(x, 'bs c (nump numd) 1 -> (bs nump numd) c', numd=numd).contiguous()
+        fg_density = self.fg_density(fg_feat)
         fg_color = self.fg_color(fg_feat)
 
-        fg_density = rearrange(
-            fg_density, '(bs h w numd) c -> bs h w numd c', h=hi, w=wi, numd=numd).contiguous()
-        fg_color = rearrange(
-            fg_color, '(bs h w numd) c -> bs h w numd c', h=hi, w=wi, numd=numd).contiguous()
+        fg_density = rearrange(fg_density, '(bs h w numd) c -> bs h w numd c', h=hi, w=wi, numd=numd).contiguous()
+        fg_color = rearrange(fg_color, '(bs h w numd) c -> bs h w numd c', h=hi, w=wi, numd=numd).contiguous()
 
         if self.bg_cfg is not None and bg_pts is not None:
             # inverted sphere parameterization
@@ -166,21 +157,16 @@ class NeRFSynthesisNetwork(nn.Module):
 
             bg_pts_embed = self.bg_embedder(bg_pts)
             bs, nump, numd, c = bg_pts_embed.shape
-            bg_pts_embed = rearrange(
-                bg_pts_embed, 'bs nump numd c -> bs c (nump numd) 1').contiguous()
+            bg_pts_embed = rearrange(bg_pts_embed, 'bs nump numd c -> bs c (nump numd) 1').contiguous()
             x = bg_pts_embed
             for bg_mlp in self.bg_mlps:
-                x, style = bg_mlp(
-                    x, w, fused_modulate=fused_modulate, impl=impl)
-            bg_feat = rearrange(
-                x, 'bs c (nump numd) 1 -> (bs nump numd) c', numd=numd).contiguous()
+                x, style = bg_mlp(x, w, fused_modulate=fused_modulate, impl=impl)
+            bg_feat = rearrange(x, 'bs c (nump numd) 1 -> (bs nump numd) c', numd=numd).contiguous()
             bg_density = self.bg_density(bg_feat)
             bg_color = self.bg_color(bg_feat)
 
-            bg_density = rearrange(
-                bg_density, '(bs  nump numd) c -> bs nump numd c', nump=nump, numd=numd).contiguous()
-            bg_color = rearrange(
-                bg_color, '(bs  nump numd) c -> bs nump numd c', nump=nump, numd=numd).contiguous()
+            bg_density = rearrange(bg_density, '(bs  nump numd) c -> bs nump numd c', nump=nump, numd=numd).contiguous()
+            bg_color = rearrange(bg_color, '(bs  nump numd) c -> bs nump numd c', nump=nump, numd=numd).contiguous()
         else:
             bg_color = None
             bg_density = None
@@ -191,7 +177,6 @@ class NeRFSynthesisNetwork(nn.Module):
         }
         return results
 
-
 def kaiming_leaky_init(m):
     classname = m.__class__.__name__
     if classname.find('Linear') != -1:
@@ -199,7 +184,6 @@ def kaiming_leaky_init(m):
                                       a=0.2,
                                       mode='fan_in',
                                       nonlinearity='leaky_relu')
-
 
 class FeatureVolume(nn.Module):
     def __init__(
@@ -214,94 +198,53 @@ class FeatureVolume(nn.Module):
         super().__init__()
         self.num_stages = int(np.log2(feat_res // init_res)) + 1
 
-        self.plane = nn.Parameter(torch.ones(
-            1, 3, base_channels,  init_res, init_res))
-        self.line = nn.Parameter(torch.ones(1, 3, base_channels, init_res))
-
+        self.const = nn.Parameter(
+            torch.ones(1, base_channels, init_res, init_res, init_res))
         inplanes = base_channels
         outplanes = base_channels
 
         self.stage_channels = []
         for i in range(self.num_stages):
-            for xyz in range(3):
-                conv_plane = nn.Conv2d(inplanes,
-                                       outplanes,
-                                       kernel_size=(3, 3),
-                                       padding=(1, 1))
-                conv_line = nn.Conv1d(inplanes,
-                                      outplanes,
-                                      kernel_size=3,
-                                      padding=1)
-
-                self.add_module(f'layer_plane_{xyz}_{i}', conv_plane)
-                self.add_module(f'layer_line_{xyz}_{i}', conv_line)
-
-                instance_norm_plane = InstanceNormLayer_plane(
-                    num_features=outplanes, affine=False)
-                instance_norm_line = InstanceNormLayer_line(
-                    num_features=outplanes, affine=False)
-
-                self.add_module(
-                    f'instance_norm_plane_{xyz}_{i}', instance_norm_plane)
-                self.add_module(
-                    f'instance_norm_line_{xyz}_{i}', instance_norm_line)
-
+            conv = nn.Conv3d(inplanes,
+                             outplanes,
+                             kernel_size=(3, 3, 3),
+                             padding=(1, 1, 1))
             self.stage_channels.append(outplanes)
+            self.add_module(f'layer{i}', conv)
+            instance_norm = InstanceNormLayer(num_features=outplanes, affine=False)
+
+            self.add_module(f'instance_norm{i}', instance_norm)
             inplanes = outplanes
             outplanes = max(outplanes // 2, output_channels)
             if i == self.num_stages - 1:
                 outplanes = output_channels
 
-        self.mapping_network = nn.Linear(w_dim, sum(self.stage_channels) * 6)
+        self.mapping_network = nn.Linear(w_dim, sum(self.stage_channels) * 2)
         self.mapping_network.apply(kaiming_leaky_init)
-        with torch.no_grad():
-            self.mapping_network.weight *= 0.25
+        with torch.no_grad(): self.mapping_network.weight *= 0.25
         self.upsample = UpsamplingLayer()
         self.lrelu = nn.LeakyReLU(negative_slope=0.2)
 
     def forward(self, w, **kwargs):
         scale_shifts = self.mapping_network(w)
-        plane_ret, line_ret = [], []
-        for i in range(3):
-            scale_shift = scale_shifts[..., i *
-                                       (scale_shifts.shape[-1]//3):(i+1)*(scale_shifts.shape[-1]//3)]
-            scales = scale_shift[..., :scale_shift.shape[-1]//2]
-            shifts = scale_shift[..., scale_shift.shape[-1]//2:]
+        scales = scale_shifts[..., :scale_shifts.shape[-1]//2]
+        shifts = scale_shifts[..., scale_shifts.shape[-1]//2:]
 
-            plane = self.plane[:, i].repeat(w.shape[0], 1, 1, 1, )
-            line = self.line[:, i].repeat(w.shape[0], 1, 1)
+        x = self.const.repeat(w.shape[0], 1, 1, 1, 1)
+        for idx in range(self.num_stages):
+            if idx != 0:
+                x = self.upsample(x)
+            conv_layer = self.__getattr__(f'layer{idx}')
+            x = conv_layer(x)
+            instance_norm = self.__getattr__(f'instance_norm{idx}')
+            scale = scales[:, sum(self.stage_channels[:idx]):sum(self.stage_channels[:idx + 1])]
+            shift = shifts[:, sum(self.stage_channels[:idx]):sum(self.stage_channels[:idx + 1])]
+            scale = scale.view(scale.shape + (1, 1, 1))
+            shift = shift.view(shift.shape + (1, 1, 1))
+            x = instance_norm(x, weight=scale, bias=shift)
+            x = self.lrelu(x)
 
-            for idx in range(self.num_stages):
-                if idx != 0:
-                    plane = self.upsample(plane)
-                    line = self.upsample(line)
-                conv_layer_plane = self.__getattr__(f'layer_plane_{i}_{idx}')
-                conv_layer_line = self.__getattr__(f'layer_line_{i}_{idx}')
-
-                plane = conv_layer_plane(plane)
-                line = conv_layer_line(line)
-                instance_norm_plane = self.__getattr__(
-                    f'instance_norm_plane_{i}_{idx}')
-                instance_norm_line = self.__getattr__(
-                    f'instance_norm_line_{i}_{idx}')
-                scale = scales[:, sum(self.stage_channels[:idx]):sum(
-                    self.stage_channels[:idx + 1])]
-                shift = shifts[:, sum(self.stage_channels[:idx]):sum(
-                    self.stage_channels[:idx + 1])]
-                scale_plane = scale.view(scale.shape + (1, 1))
-                shift_plane = shift.view(shift.shape + (1, 1))
-                scale_line = scale.view(scale.shape + (1,))
-                shift_line = shift.view(shift.shape + (1,))
-                plane = instance_norm_plane(
-                    plane, weight=scale_plane, bias=shift_plane)
-                line = instance_norm_line(
-                    line, weight=scale_line, bias=shift_line)
-                plane = self.lrelu(plane)
-                line = self.lrelu(line)
-            plane_ret.append(plane)
-            line_ret.append(line)
-        return torch.stack(plane_ret, dim=1).cuda(), torch.stack(line_ret, dim=1).cuda()
-
+        return x
 
 class Embedder(nn.Module):
     def __init__(self, input_dim, max_freq_log2, N_freqs,
@@ -744,56 +687,25 @@ class DenseLayer(nn.Module):
 
 # pylint: enable=missing-function-docstring
 
-
-class InstanceNormLayer_plane(nn.Module):
+class InstanceNormLayer(nn.Module):
     """Implements instance normalization layer."""
-
     def __init__(self, num_features, epsilon=1e-8, affine=False):
         super().__init__()
         self.eps = epsilon
         self.affine = affine
         if self.affine:
-            self.weight = nn.Parameter(torch.Tensor(1, num_features, 1, 1))
-            self.bias = nn.Parameter(torch.Tensor(1, num_features, 1, 1))
+            self.weight = nn.Parameter(torch.Tensor(1, num_features,1,1,1))
+            self.bias = nn.Parameter(torch.Tensor(1, num_features,1,1,1))
             self.weight.data.uniform_()
             self.bias.data.zero_()
 
     def forward(self, x, weight=None, bias=None):
-        x = x - torch.mean(x, dim=[2, 3], keepdim=True)
+        x = x - torch.mean(x, dim=[2, 3, 4], keepdim=True)
         norm = torch.sqrt(
-            torch.mean(x**2, dim=[2, 3], keepdim=True) + self.eps)
+            torch.mean(x**2, dim=[2, 3, 4], keepdim=True) + self.eps)
         x = x / norm
         isnot_input_none = weight is not None and bias is not None
-        assert (isnot_input_none and not self.affine) or (
-            not isnot_input_none and self.affine)
-        if self.affine:
-            x = x*self.weight + self.bias
-        else:
-            x = x*weight + bias
-        return x
-
-
-class InstanceNormLayer_line(nn.Module):
-    """Implements instance normalization layer."""
-
-    def __init__(self, num_features, epsilon=1e-8, affine=False):
-        super().__init__()
-        self.eps = epsilon
-        self.affine = affine
-        if self.affine:
-            self.weight = nn.Parameter(torch.Tensor(1, num_features, 1))
-            self.bias = nn.Parameter(torch.Tensor(1, num_features, 1))
-            self.weight.data.uniform_()
-            self.bias.data.zero_()
-
-    def forward(self, x, weight=None, bias=None):
-        x = x - torch.mean(x, dim=[2, ], keepdim=True)
-        norm = torch.sqrt(
-            torch.mean(x**2, dim=[2, ], keepdim=True) + self.eps)
-        x = x / norm
-        isnot_input_none = weight is not None and bias is not None
-        assert (isnot_input_none and not self.affine) or (
-            not isnot_input_none and self.affine)
+        assert (isnot_input_none and not self.affine) or (not isnot_input_none and self.affine)
         if self.affine:
             x = x*self.weight + self.bias
         else:
