@@ -9,6 +9,7 @@ data/
 *.log
 *.txt
 checkpoint*/
+test/
 # Distribution / packaging
 .Python
 build/
