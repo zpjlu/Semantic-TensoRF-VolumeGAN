@@ -1,7 +1,7 @@
 python -u train.py \
 --dataset data/lmdb_celebamaskhq_512 \
 --inception data/inception_celebamaskhq_512.pkl \
---checkpoint_dir test/test5/celebamaskhq_512 \
+--checkpoint_dir test/test6/celebamaskhq_512 \
 --seg_dim 13 \
 --size 512 \
 --transparent_dims 10 12 \

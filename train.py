@@ -408,7 +408,7 @@ if __name__ == '__main__':
     parser.add_argument('--base_layers', type=int, default=2, help="number of layers with shared coarse structure code")
     parser.add_argument('--depth_layers', type=int, default=6, help="number of layers before outputing pseudo-depth map")
     parser.add_argument('--local_channel', type=int, default=64, help="number of channels in local generators")
-    parser.add_argument('--coarse_channel', type=int, default=256, help="number of channels in coarse feature map")
+    parser.add_argument('--coarse_channel', type=int, default=128, help="number of channels in coarse feature map")
     parser.add_argument('--coarse_size', type=int, default=32, help="size of the coarse feature map and segmentation mask")
     parser.add_argument('--min_feat_size', type=int, default=16, help="size of downsampled feature map")
     parser.add_argument('--residual_refine', action="store_true", help="whether to use residual to refine the coarse mask")

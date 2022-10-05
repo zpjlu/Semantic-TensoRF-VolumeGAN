@@ -248,7 +248,7 @@ class SemanticGenerator(nn.Module):
                  coarse_size=64, min_feat_size=8, local_layers=10, local_channel=64,
                  coarse_channel=512, base_layers=2, depth_layers=6, residual_refine=True,
                  detach_texture=False, transparent_dims=(),
-                 ps_cfg=dict(num_steps=6,
+                 ps_cfg=dict(num_steps=12,
                              ray_start=0.88,
                              ray_end=1.12,
                              radius=1,
