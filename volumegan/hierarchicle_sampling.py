@@ -1,6 +1,7 @@
 # python3.7
 """Contains the function to sample the points in 3D space."""
 
+from argparse import RawDescriptionHelpFormatter
 import torch
 
 from .renderer import renderer
@@ -88,6 +89,7 @@ class HierarchicalSampling(object):
                                           fill_mode=self.fill_mode,
                                           max_depth=self.max_depth,
                                           num_per_group=self.num_per_group)
+        # ret_weight = renderer_results['weights']
         weights = renderer_results['weights'].reshape(batch_size * num_rays, num_steps) + 1e-5
 
         # Importance sampling
@@ -113,7 +115,7 @@ class HierarchicalSampling(object):
             'ray_dirs': ray_dirs,
         }
 
-        return results
+        return results #, ret_weight.reshape(batch_size, H, W, num_steps, 1) 
 
 
 

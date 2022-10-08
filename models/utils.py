@@ -552,12 +552,16 @@ class ToRGB(nn.Module):
     '''
         Re-defined ToRGB without style modulation
     '''
-    def __init__(self, in_channel, out_channel=3, style_dim=512, upsample=True, blur_kernel=[1, 3, 3, 1]):
+    def __init__(self, in_channel, out_channel=3, style_dim=512, upsample=True, blur_kernel=[1, 3, 3, 1], bias = None, feat_size = None):
         super().__init__()
         if upsample:
             self.upsample = Upsample(blur_kernel)
         self.conv = FixedStyledConv(in_channel, out_channel, 1, style_dim, demodulate=False, inject_noise=False, activate=False)
-        self.bias = nn.Parameter(torch.zeros(1, out_channel, 1, 1))
+        size = feat_size if feat_size else 1
+        if bias:
+            self.bias = nn.Parameter(torch.ones(1, out_channel, size, size)*bias)
+        else:
+            self.bias = nn.Parameter(torch.zeros(1, out_channel, size, size))
 
     def forward(self, input, style, skip=None):
         out = self.conv(input, style)

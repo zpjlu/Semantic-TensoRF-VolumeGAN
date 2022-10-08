@@ -376,6 +376,7 @@ def train(args, ckpt_dir, loader, generator, discriminator, g_optim, d_optim, g_
 
 if __name__ == '__main__':
     device = 'cuda'
+    print(device)
     parser = argparse.ArgumentParser()
 
     parser.add_argument('--dataset', type=str, required=True)
@@ -385,7 +386,7 @@ if __name__ == '__main__':
 
     parser.add_argument('--iter', type=int, default=200001)
     parser.add_argument('--batch', type=int, default=4)
-    parser.add_argument('--n_sample', type=int, default=16)
+    parser.add_argument('--n_sample', type=int, default=4)
     parser.add_argument('--size', type=int, default=256)
     parser.add_argument('--r1_img', type=float, default=10)
     parser.add_argument('--r1_seg', type=float, default=1000)
@@ -408,8 +409,8 @@ if __name__ == '__main__':
     parser.add_argument('--base_layers', type=int, default=2, help="number of layers with shared coarse structure code")
     parser.add_argument('--depth_layers', type=int, default=6, help="number of layers before outputing pseudo-depth map")
     parser.add_argument('--local_channel', type=int, default=64, help="number of channels in local generators")
-    parser.add_argument('--coarse_channel', type=int, default=128, help="number of channels in coarse feature map")
-    parser.add_argument('--coarse_size', type=int, default=32, help="size of the coarse feature map and segmentation mask")
+    parser.add_argument('--coarse_channel', type=int, default=256, help="number of channels in coarse feature map")
+    parser.add_argument('--coarse_size', type=int, default=64, help="size of the coarse feature map and segmentation mask")
     parser.add_argument('--min_feat_size', type=int, default=16, help="size of downsampled feature map")
     parser.add_argument('--residual_refine', action="store_true", help="whether to use residual to refine the coarse mask")
     parser.add_argument('--detach_texture', action="store_true", help="whether to detach between depth layers and texture layers")

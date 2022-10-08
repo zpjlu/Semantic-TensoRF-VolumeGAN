@@ -29,6 +29,7 @@ def get_grid_coords(points, bounds):
     bounds = bounds[None]
     min_xyz = bounds[:, :1]
     points = points - min_xyz
+    a = torch.amin(points)
     # convert the voxel coordinate to [-1, 1]
     size = bounds[:, 1] - bounds[:, 0]
     points = (points / size[:, None]) * 2 - 1
