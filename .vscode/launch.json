@@ -14,22 +14,26 @@
             "env": {
                 "CUDA_VISIBLE_DEVICES":"1"
             },
-            "args": [
-                "--dataset","data/lmdb_celebamaskhq_512",
-                "--inception","data/inception_celebamaskhq_512.pkl",
-                "--checkpoint_dir","test/test/celebamaskhq_512",
-                "--seg_dim","13",
-                "--size","512",
-                "--transparent_dims","10","12",
-                "--residual_refine",
-                "--batch","4",
-            ]
             // "args": [
-            //     "test/1007_2/celebamaskhq_512/ckpt/010000.pt",
-            //     "--outdir","results/samples",
+            //     "--dataset","data/lmdb_celebamaskhq_512",
+            //     "--inception","data/inception_celebamaskhq_512.pkl",
+            //     "--checkpoint_dir","test/test/celebamaskhq_512",
+            //     "--seg_dim","13",
+            //     "--size","512",
+            //     "--transparent_dims","10","12",
+            //     "--residual_refine",
+            //     "--batch","4",
+            // ]
+            // "args": [
+            //     "test/1011/celebamaskhq_512/ckpt/020000.pt",
+            //     "--outdir","results/1011",
             //     "--sample","4",
             //     "--save_latent"
             // ]
+            "args": [
+                "test/1012/celebamaskhq_512/ckpt/010000.pt",
+                "--outdir","videos/interpolation"
+            ]
         }
     ]
 }

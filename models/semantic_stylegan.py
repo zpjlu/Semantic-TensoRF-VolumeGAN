@@ -14,6 +14,7 @@
 # DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
 # WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING
 # OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+from audioop import bias
 from operator import truediv
 from re import T
 from einops import rearrange
@@ -151,8 +152,8 @@ class LocalGenerator(nn.Module):
             self.linears.append(StyledConv(
                 in_channel, hidden_channel, 1, style_dim, inject_noise=False))
             in_channel = hidden_channel
-        self.to_feat = ToRGB(hidden_channel, out_channel, style_dim, feat_size=1)
-        self.to_sigma = ToRGB(hidden_channel, 1, style_dim, bias=0.5)
+        self.to_feat = ToRGB(hidden_channel, out_channel, style_dim)
+        self.to_sigma = ToRGB(hidden_channel, 1, style_dim, bias=0.5, feat_size=1)
         if self.use_depth:
             self.to_depth = ToRGB(hidden_channel, 1, style_dim, bias=feat_size//4, feat_size=1)
 
@@ -295,6 +296,7 @@ class SemanticGenerator(nn.Module):
         self.pos_embed = PositionEmbedding(
             2, self.local_channel, N_freqs=self.log_size)
         self.local_nets = nn.ModuleList()
+        depths = [5,18,20,20,20,25,15,20,15,18,25,22,18]
         for i in range(0, self.n_local):
             use_depth = i > 0  # disable pseudo-depth for background generator   #TODO:背景不需要深度
             self.local_nets.append(LocalGenerator(local_channel, coarse_channel, local_channel, style_dim,
@@ -469,12 +471,10 @@ class SemanticGenerator(nn.Module):
                                                                  1, -1, 1).repeat(b, 1, 1, h)
         return torch.cat((x_channel, y_channel), dim=1)
 
-    def volumegan_render(self, feat, ps_results):
+    def volumegan_render(self, feat, ps_results, bound):
         pts = ps_results['pts']
         h, w, d = pts.shape[1:4]
         pts = rearrange(pts, 'bs h w d c -> bs (h w d) c').contiguous()
-        bound = [[-0.1886, -0.1671, -0.1956],[0.1887, 0.1692, 0.1872]]
-        bound = torch.Tensor(bound).to(pts)
         feat_volume = feat
         feat_pro = interpolate_feature_3d(pts, feat_volume, bound)
         feat_pro = rearrange(feat_pro, 'bs c (h w numd) -> bs h w numd c',h=h, w=w, numd=d)
@@ -544,7 +544,8 @@ class SemanticGenerator(nn.Module):
         h, w, d = pts.shape[1:4]
         pts = rearrange(pts, 'bs h w d c -> bs (h w d) c').contiguous()
 
-        bound = [[-0.1886, -0.1671, -0.1956],[0.1887, 0.1692, 0.1872]]
+        # bound = [[-0.1886, -0.1671, -0.1956],[0.1887, 0.1692, 0.1872]]
+        bound = [[-0.1886, -0.1671, -0.1956*0.6],[0.1887, 0.1692, 0.1872*0.6]]
         bound = torch.Tensor(bound).to(pts)
         # Local Generators
         sigmas_3d = []
@@ -568,13 +569,14 @@ class SemanticGenerator(nn.Module):
         sigma = sum(sigmas_3d)
         feat = sum(feats_3d)
         # sample_sigmas = torch.cat(sample_sigmas, dim=1)
-        feat_comp, ret_weight, pts_all = self.volumegan_render(torch.cat([sigma,feat],dim=1), ps_results)
+        feat_comp, ret_weight, pts_all = self.volumegan_render(torch.cat([sigma,feat],dim=1), ps_results, bound)
         for i in range(self.n_local):
             local_sigma = interpolate_feature_3d(pts_all, sigmas_3d[i],bound)
             sample_sigma = rearrange(local_sigma, 'bs c (h w numd) -> bs c h w numd',h=h, w=w, numd=2*d)
             sample_sigmas.append(sample_sigma)
         sample_sigmas = torch.cat(sample_sigmas, dim=1)
-        sample_sigmas = torch.sum(sample_sigmas*ret_weight, dim=-1)
+        # sample_sigmas = torch.sum(sample_sigmas*ret_weight, dim=-1)
+        sample_sigmas = torch.sum(sample_sigmas, dim=-1)
         seg_coarse = F.softmax(sample_sigmas, dim=1)
         # feats_2d = []
         # depths = []

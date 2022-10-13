@@ -15,14 +15,14 @@ args = dict(num_steps=12,
                              perturb_mode=None)
 func = PointsSampling(**args)
 ret = []
-for i in range(3000):
+for i in range(2000):
     ps = func(4,64)
     ret.append(ps['pts'])
 pts = torch.cat(ret,-2)
-print(torch.amax(pts[...,0]))
-print(torch.amax(pts[...,1]))
-print(torch.amax(pts[...,2]))
-print(torch.amin(pts[...,0]))
-print(torch.amin(pts[...,1]))
-print(torch.amin(pts[...,2]))
+print(torch.mean(pts[...,0,:,0]))
+print(torch.mean(pts[...,-1,:,:,1]))
+print(torch.mean(pts[...,-1,2]))
+print(torch.mean(pts[...,-1,:,0]))
+print(torch.mean(pts[...,0,:,:,1]))
+print(torch.mean(pts[...,0,2]))
 
