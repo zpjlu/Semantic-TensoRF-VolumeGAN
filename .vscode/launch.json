@@ -12,7 +12,7 @@
             "console": "integratedTerminal",
             "justMyCode": true,
             "env": {
-                "CUDA_VISIBLE_DEVICES":"1"
+                "CUDA_VISIBLE_DEVICES":"0"
             },
             // "args": [
             //     "--dataset","data/lmdb_celebamaskhq_512",
@@ -24,16 +24,16 @@
             //     "--residual_refine",
             //     "--batch","4",
             // ]
-            // "args": [
-            //     "test/1011/celebamaskhq_512/ckpt/020000.pt",
-            //     "--outdir","results/1011",
-            //     "--sample","4",
-            //     "--save_latent"
-            // ]
             "args": [
-                "test/1012/celebamaskhq_512/ckpt/010000.pt",
-                "--outdir","videos/interpolation"
+                "test/1014/celebamaskhq_512/ckpt/020000.pt",
+                "--outdir","results/1014_20000",
+                "--sample","1",
+                "--save_latent"
             ]
+            // "args": [
+            //     "test/1012/celebamaskhq_512/ckpt/010000.pt",
+            //     "--outdir","videos/interpolation"
+            // ]
         }
     ]
 }

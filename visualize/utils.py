@@ -48,11 +48,11 @@ def generate_img(model, styles, mean_latent=None, truncation=1.0, batch_size=16,
     images = torch.cat(images,0)
     return tensor2image(images)
 
-def generate(model, styles, mean_latent=None, truncation=1.0, batch_size=16, *args, **kwargs):
+def generate(model, styles, mean_latent=None, truncation=1.0, batch_size=16, ps_kwargs=dict(), *args, **kwargs):
     images, segs = [], []
     for head in range(0, styles.size(0), batch_size):
         images_, segs_ = model([styles[head:head+batch_size]], input_is_latent=True,
-                                    truncation=truncation, truncation_latent=mean_latent, *args, **kwargs)
+                                    truncation=truncation, truncation_latent=mean_latent, ps_kwargs=ps_kwargs, *args, **kwargs)
         images.append(images_.detach().cpu())
         segs.append(segs_.detach().cpu())
     images, segs = torch.cat(images,0), torch.cat(segs,0)

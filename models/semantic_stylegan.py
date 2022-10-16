@@ -153,9 +153,9 @@ class LocalGenerator(nn.Module):
                 in_channel, hidden_channel, 1, style_dim, inject_noise=False))
             in_channel = hidden_channel
         self.to_feat = ToRGB(hidden_channel, out_channel, style_dim)
-        self.to_sigma = ToRGB(hidden_channel, 1, style_dim, bias=0.5, feat_size=1)
+        self.to_sigma = ToRGB(hidden_channel, 1, style_dim, bias=0.5, feat_size=feat_size)
         if self.use_depth:
-            self.to_depth = ToRGB(hidden_channel, 1, style_dim, bias=feat_size//4, feat_size=1)
+            self.to_depth = ToRGB(hidden_channel, 1, style_dim, bias=feat_size//4, feat_size=feat_size)
 
     def forward(self, x, latent):
         # depth = torch.ones(x.size(0), 1, x.size(2), x.size(3)).to(x.device)*1e-8
@@ -255,13 +255,13 @@ class SemanticGenerator(nn.Module):
                  coarse_channel=512, base_layers=2, depth_layers=6, residual_refine=True,
                  detach_texture=False, transparent_dims=(),
                  ps_cfg=dict(num_steps=12,
-                             ray_start=0.88,
-                             ray_end=1.12,
+                             ray_start=0.8,
+                             ray_end=1.2,
                              radius=1,
                              horizontal_mean=PI/2,
-                             horizontal_stddev=0.3,
+                             horizontal_stddev=0.4,
                              vertical_mean=PI/2,
-                             vertical_stddev=0.15,
+                             vertical_stddev=0.2,
                              camera_dist='gaussian',
                              fov=12,  # TODO:需要根据数据集调整这一系列参数
                              perturb_mode=None),
@@ -545,7 +545,7 @@ class SemanticGenerator(nn.Module):
         pts = rearrange(pts, 'bs h w d c -> bs (h w d) c').contiguous()
 
         # bound = [[-0.1886, -0.1671, -0.1956],[0.1887, 0.1692, 0.1872]]
-        bound = [[-0.1886, -0.1671, -0.1956*0.6],[0.1887, 0.1692, 0.1872*0.6]]
+        bound = [[-0.1886, -0.1671, -0.1956],[0.1887, 0.1692, 0.1872]]
         bound = torch.Tensor(bound).to(pts)
         # Local Generators
         sigmas_3d = []
@@ -557,7 +557,11 @@ class SemanticGenerator(nn.Module):
                                   self.local_layers:(i+1)*self.local_layers]
             feat, depth, sigma = self.local_nets[i](x, local_latent)
             weight = torch.arange(self.coarse_size//2).reshape(1,1,self.coarse_size//2,1,1).repeat(depth.shape[0],depth.shape[1], 1, depth.shape[2],depth.shape[3]).to(depth.device)
-            weight = torch.exp(-2*torch.square(weight - depth.unsqueeze(2)))
+            # if i == 1:
+            #     face_depth = depth
+            # if i > 1:
+            #     depth = face_depth + depth
+            weight = torch.exp(-torch.square(weight - depth.unsqueeze(2)))
             feat_3d = weight*feat.unsqueeze(2)
             sigma_3d = weight*sigma.unsqueeze(2)
             # local_sigma = interpolate_feature_3d(pts, sigma_3d,bound)

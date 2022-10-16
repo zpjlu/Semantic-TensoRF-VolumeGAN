@@ -1,5 +1,5 @@
-python visualize/generate.py \
-test/1007_2/celebamaskhq_512/ckpt/010000.pt \
---outdir results/samples \
---sample 4 \
+python generate.py \
+test/1012/celebamaskhq_512/ckpt/020000.pt \
+--outdir results/1012 \
+--sample 1 \
 --save_latent
