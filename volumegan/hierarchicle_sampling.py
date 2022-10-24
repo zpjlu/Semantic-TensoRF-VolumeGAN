@@ -40,7 +40,7 @@ class HierarchicalSampling(object):
         self.max_depth = max_depth
         self.num_per_group = num_per_group
 
-    def __call__(self, coarse_rgbs, coarse_sigmas, pts_z, ray_origins, ray_dirs, noise_std=0.5, **kwargs):
+    def __call__(self, coarse_rgbs, coarse_sigmas, pts_z, ray_origins, ray_dirs, noise_std=0.5, sample_model=1, **kwargs):
         """
         Args:
             coarse_rgbs: (batch_size, num_of_rays, num_steps, 3) or (batch_size, H, W, num_steps, 3)
@@ -95,6 +95,12 @@ class HierarchicalSampling(object):
         # Importance sampling
         pts_z = pts_z.reshape(batch_size * num_rays, num_steps)
         pts_z_mid = 0.5 * (pts_z[:, :-1] + pts_z[:, 1:])
+        if sample_model == 1:
+            num_steps = num_steps
+        elif sample_model == 0:
+            num_steps = num_steps*2
+        else:
+            num_steps = num_steps//2
         fine_pts_z = self.sample_pdf(pts_z_mid,
                                       weights[:, 1:-1],
                                       num_steps,

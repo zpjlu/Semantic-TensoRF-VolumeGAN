@@ -24,6 +24,7 @@ import torch
 
 from models import make_model
 from visualize.utils import generate, cubic_spline_interpolate
+from math import pi as PI
 
 latent_dict_celeba = {
     2:  "bcg_1",
@@ -62,7 +63,7 @@ if __name__ == '__main__':
         help="path to the latent numpy")
     parser.add_argument('--outdir', type=str, default='./results/interpolation/', 
         help="path to the output directory")
-    parser.add_argument('--batch', type=int, default=8, help="batch size for inference")
+    parser.add_argument('--batch', type=int, default=4, help="batch size for inference")
     parser.add_argument("--sample", type=int, default=10,
         help="number of latent samples to be interpolated")
     parser.add_argument("--steps", type=int, default=160,
@@ -87,7 +88,12 @@ if __name__ == '__main__':
     model.eval()
     model.load_state_dict(ckpt['g_ema'])
     mean_latent = model.style(torch.randn(args.truncation_mean, model.style_dim, device=args.device)).mean(0)
-
+    ps_kwargs = {}
+    ps_kwargs['horizontal_stddev'] = 0
+    ps_kwargs['vertical_stddev'] = 0
+    ps_kwargs['horizontal_mean'] = PI/2
+    ps_kwargs['vertical_mean'] = PI/2
+    ps_kwargs['num_steps'] = 36
     print("Generating original image ...")
     with torch.no_grad():
         if args.latent is None:
@@ -98,7 +104,7 @@ if __name__ == '__main__':
         if styles.ndim == 2:
             assert styles.size(1) == model.style_dim
             styles = styles.unsqueeze(1).repeat(1, model.n_latent, 1)
-        images, segs = generate(model, styles, mean_latent=mean_latent, randomize_noise=False)
+        images, segs = generate(model, styles, mean_latent=mean_latent, randomize_noise=False, ps_kwargs=ps_kwargs)
         imageio.imwrite(f'{args.outdir}/image.jpeg', images[0])
         imageio.imwrite(f'{args.outdir}/seg.jpeg', segs[0])
 
@@ -115,11 +121,26 @@ if __name__ == '__main__':
             mix_styles[-1] = mix_styles[0]
             mix_styles = args.truncation * mix_styles + (1-args.truncation) * mean_latent.unsqueeze(0)
             mix_styles = mix_styles.unsqueeze(1).repeat(1,model.n_latent,1)
-            styles_new[:,latent_index] = mix_styles[:,latent_index]
+            styles_new[:,latent_index-2] = mix_styles[:,latent_index-2]
             styles_new = cubic_spline_interpolate(styles_new, step=args.steps)
             images, segs = generate(model, styles_new, mean_latent=mean_latent, 
-                        randomize_noise=False, batch_size=args.batch)
+                        randomize_noise=False, batch_size=args.batch, ps_kwargs=ps_kwargs)
  
             frames = [np.concatenate((img,seg),1) for (img,seg) in zip(images,segs)]
             imageio.mimwrite(f'{args.outdir}/{latent_index:02d}_{latent_name}.mp4', frames, fps=20)
             print(f"{args.outdir}/{latent_index:02d}_{latent_name}.mp4")
+
+        # for i in range(14):
+        #     styles_new = styles.repeat(args.sample, 1, 1)
+        #     mix_styles = model.style(torch.randn(args.sample, 512, device=args.device))
+        #     mix_styles[-1] = mix_styles[0]
+        #     mix_styles = args.truncation * mix_styles + (1-args.truncation) * mean_latent.unsqueeze(0)
+        #     mix_styles = mix_styles.unsqueeze(1).repeat(1,model.n_latent,1)
+        #     styles_new[:,i*2:i*2+2] = mix_styles[:,i*2:i*2+2]
+        #     styles_new = cubic_spline_interpolate(styles_new, step=args.steps)
+        #     images, segs = generate(model, styles_new, mean_latent=mean_latent, 
+        #                 randomize_noise=False, batch_size=args.batch, ps_kwargs=ps_kwargs)
+
+        #     frames = [np.concatenate((img,seg),1) for (img,seg) in zip(images,segs)]
+        #     imageio.mimwrite(f'{args.outdir}/{i:02d}.mp4', frames, fps=20)
+        #     print(f"{args.outdir}/{i:02d}.mp4")

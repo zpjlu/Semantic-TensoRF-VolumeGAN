@@ -160,7 +160,7 @@ def train(args, ckpt_dir, loader, generator, discriminator, g_optim, d_optim, g_
     get_inception_metrics = prepare_inception_metrics(args.inception, False)
     # sample func for calculate FID
     sample_fn = functools.partial(sample_gema, g_ema=g_ema, device=device, 
-                        truncation=1.0, mean_latent=None, batch_size=args.batch)
+                        truncation=1.0, mean_latent=None, batch_size=2, num_steps=24)
 
     loader = sample_data(loader)
     pbar = range(args.iter)
@@ -191,7 +191,10 @@ def train(args, ckpt_dir, loader, generator, discriminator, g_optim, d_optim, g_
     for idx in tqdm(pbar):
         tic = time.time()
         i = idx + args.start_iter
-
+        if i < args.num_pre_train:
+            pre_train = True
+        else:
+            pre_train = False
         if i > args.iter:
             print('Done!')
             break
@@ -205,7 +208,7 @@ def train(args, ckpt_dir, loader, generator, discriminator, g_optim, d_optim, g_
         requires_grad(discriminator, True)
 
         noise = mixing_noise(args.batch, args.latent, args.mixing, device)
-        fake_img, fake_seg = generator(noise)
+        fake_img, fake_seg = generator(noise, pre_train=pre_train)
 
         fake_pred = discriminator(fake_img, fake_seg)
         real_pred = discriminator(real_img, real_mask)
@@ -243,7 +246,7 @@ def train(args, ckpt_dir, loader, generator, discriminator, g_optim, d_optim, g_
 
         noise = mixing_noise(args.batch, args.latent, args.mixing, device)
         
-        fake_img, fake_seg, fake_seg_coarse, _, _ = generator(noise, return_all=True)
+        fake_img, fake_seg, fake_seg_coarse, _, _ = generator(noise, return_all=True, pre_train=pre_train)
         fake_pred = discriminator(fake_img, fake_seg)
         g_loss = g_nonsaturating_loss(fake_pred)
 
@@ -269,7 +272,7 @@ def train(args, ckpt_dir, loader, generator, discriminator, g_optim, d_optim, g_
                 noise = [g_module.style(n) for n in noise]
                 latents = g_module.mix_styles(noise).clone()
             latents.requires_grad = True
-            fake_img, fake_seg = generator([latents], input_is_latent=True)
+            fake_img, fake_seg = generator([latents], input_is_latent=True, pre_train=pre_train)
 
             path_loss, mean_path_length, path_lengths = g_path_regularize(
                 fake_img, latents, mean_path_length
@@ -394,7 +397,7 @@ if __name__ == '__main__':
     parser.add_argument('--path_batch_shrink', type=int, default=2)
     parser.add_argument('--d_reg_every', type=int, default=16)
     parser.add_argument('--g_reg_every', type=int, default=4)
-    parser.add_argument('--viz_every', type=int, default=2000)
+    parser.add_argument('--viz_every', type=int, default=1000)
     parser.add_argument('--save_every', type=int, default=10000)
 
     parser.add_argument('--mixing', type=float, default=0.3)
@@ -406,7 +409,7 @@ if __name__ == '__main__':
 
     # Semantic StyleGAN
     parser.add_argument('--local_layers', type=int, default=10, help="number of layers in local generators")
-    parser.add_argument('--base_layers', type=int, default=2, help="number of layers with shared coarse structure code")
+    parser.add_argument('--base_layers', type=int, default=0, help="number of layers with shared coarse structure code")
     parser.add_argument('--depth_layers', type=int, default=6, help="number of layers before outputing pseudo-depth map")
     parser.add_argument('--local_channel', type=int, default=64, help="number of channels in local generators")
     parser.add_argument('--coarse_channel', type=int, default=256, help="number of channels in coarse feature map")
@@ -419,12 +422,20 @@ if __name__ == '__main__':
 
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--local_rank', type=int, default=0)
-
+    parser.add_argument('--num_pre_train', type=int, default=4000)
+    parser.add_argument('--sample_model', type=int, default=1 ,help="0 for 1:2,1 for 1:1, 2 for 2:1")
     args = parser.parse_args()
 
     # build checkpoint dir
     ckpt_dir = args.checkpoint_dir
     os.makedirs(args.checkpoint_dir, exist_ok=True)
+
+    argsDict = args.__dict__
+    with open(os.path.join(ckpt_dir,'setting.txt'), 'w') as f:
+        f.writelines('------------------ start ------------------' + '\n')
+        for eachArg, value in argsDict.items():
+            f.writelines(eachArg + ' : ' + str(value) + '\n')
+        f.writelines('------------------- end -------------------')
 
     writer = SummaryWriter(log_dir=ckpt_dir)
 

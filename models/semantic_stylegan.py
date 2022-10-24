@@ -141,7 +141,7 @@ class TriplaneGeneraotr(nn.Module):
 
 
 class LocalGenerator(nn.Module):
-    def __init__(self, in_channel, out_channel, hidden_channel, style_dim, n_layers=8, depth_layers=8, use_depth=False, detach_texture=False, feat_size=64):
+    def __init__(self, in_channel, out_channel, hidden_channel, style_dim, n_layers=8, depth_layers=8, use_depth=False, detach_texture=False, feat_size=64, depth=0):
         super().__init__()
         self.n_layers = n_layers
         self.depth_layers = depth_layers
@@ -153,9 +153,9 @@ class LocalGenerator(nn.Module):
                 in_channel, hidden_channel, 1, style_dim, inject_noise=False))
             in_channel = hidden_channel
         self.to_feat = ToRGB(hidden_channel, out_channel, style_dim)
-        self.to_sigma = ToRGB(hidden_channel, 1, style_dim, bias=0.5, feat_size=feat_size)
+        self.to_sigma = ToRGB(hidden_channel, 1, style_dim, feat_size=feat_size)
         if self.use_depth:
-            self.to_depth = ToRGB(hidden_channel, 1, style_dim, bias=feat_size//4, feat_size=feat_size)
+            self.to_depth = ToRGB(hidden_channel, 1, style_dim, bias=depth, feat_size=feat_size)
 
     def forward(self, x, latent):
         # depth = torch.ones(x.size(0), 1, x.size(2), x.size(3)).to(x.device)*1e-8
@@ -296,11 +296,11 @@ class SemanticGenerator(nn.Module):
         self.pos_embed = PositionEmbedding(
             2, self.local_channel, N_freqs=self.log_size)
         self.local_nets = nn.ModuleList()
-        depths = [5,18,20,20,20,25,15,20,15,18,25,22,18]
+        depths = [5, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 ]
         for i in range(0, self.n_local):
-            use_depth = i > 0  # disable pseudo-depth for background generator   #TODO:背景不需要深度
+            use_depth = True  # disable pseudo-depth for background generator   #TODO:背景不需要深度
             self.local_nets.append(LocalGenerator(local_channel, coarse_channel, local_channel, style_dim,
-                                                  n_layers=local_layers, depth_layers=depth_layers, use_depth=use_depth, detach_texture=detach_texture, feat_size=coarse_size))
+                                                  n_layers=local_layers, depth_layers=depth_layers, use_depth=use_depth, detach_texture=detach_texture, feat_size=coarse_size, depth=depths[i]))
             # self.local_nets.append(NerfSynthesis(use_depth, self.depth_layers))
 
         self.render_net = RenderNet(min_feat_size, size, coarse_size, coarse_channel, 3, seg_dim, style_dim,
@@ -471,7 +471,7 @@ class SemanticGenerator(nn.Module):
                                                                  1, -1, 1).repeat(b, 1, 1, h)
         return torch.cat((x_channel, y_channel), dim=1)
 
-    def volumegan_render(self, feat, ps_results, bound):
+    def volumegan_render(self, feat, ps_results, bound, sample_model=1):
         pts = ps_results['pts']
         h, w, d = pts.shape[1:4]
         pts = rearrange(pts, 'bs h w d c -> bs (h w d) c').contiguous()
@@ -483,18 +483,25 @@ class SemanticGenerator(nn.Module):
                                             pts_z=ps_results['pts_z'],
                                             ray_origins=ps_results['ray_origins'],
                                             ray_dirs=ps_results['ray_dirs'],
-                                            noise_std=0)
+                                            noise_std=0,
+                                            sample_model=sample_model)
         hs_pts = rearrange(hs_results['pts'], 'bs h w d c -> bs (h w d) c').contiguous()
         # ret_weight = rearrange(ret_weight, 'bs h w d c -> bs c h w d').contiguous()
         hs_feat = interpolate_feature_3d(hs_pts, feat_volume, bound)
-        hs_feat = rearrange(hs_feat, 'bs c (h w numd) -> bs h w numd c',h=h, w=w, numd=d)
+        if sample_model == 1:
+            hs_d = d
+        elif sample_model == 0:
+            hs_d = d*2
+        else:
+            hs_d = d//2
+        hs_feat = rearrange(hs_feat, 'bs c (h w numd) -> bs h w numd c',h=h, w=w, numd=hs_d)
         feats_all = torch.cat([hs_feat, feat_pro], dim=-2)
         pts_z_all = torch.cat((hs_results['pts_z'], ps_results['pts_z']), dim=-2)
         # feats_all = feat_pro
         # pts_z_all = ps_results['pts_z']
         _, indices = torch.sort(pts_z_all, dim=-2)
         feats_all = torch.gather(feats_all, -2, indices.expand(-1,-1,-1,-1,feats_all.shape[-1]))
-        hs_pts = rearrange(hs_pts, 'bs ( h w d ) c -> bs h w d c',h=h, w=w, d=d)
+        hs_pts = rearrange(hs_pts, 'bs ( h w d ) c -> bs h w d c',h=h, w=w, d=hs_d)
         pts = rearrange(pts, 'bs ( h w d ) c -> bs h w d c',h=h, w=w, d=d)
         pts_all = torch.cat([hs_pts, pts], dim=-2)
         pts_all = torch.gather(pts_all, -2, indices.expand(-1,-1,-1,-1,pts_all.shape[-1]))
@@ -523,6 +530,8 @@ class SemanticGenerator(nn.Module):
                 return_latents=False,
                 return_coarse=False,
                 return_all=False,
+                pre_train=False,
+                sample_model=1,
                 ps_kwargs = dict()
                 ):
         if not input_is_latent:
@@ -538,14 +547,14 @@ class SemanticGenerator(nn.Module):
             coords = [coords.clone() for _ in range(self.n_local)]
 
         ps_results = self.pointsampler(batch_size=latent.shape[0],
-        resolution=self.coarse_size,
-        **ps_kwargs)  # TODO:test的时候可以更新
+                                        resolution=self.coarse_size,
+                                        **ps_kwargs)  # TODO:test的时候可以更新
         pts = ps_results['pts']
         h, w, d = pts.shape[1:4]
         pts = rearrange(pts, 'bs h w d c -> bs (h w d) c').contiguous()
 
-        # bound = [[-0.1886, -0.1671, -0.1956],[0.1887, 0.1692, 0.1872]]
         bound = [[-0.1886, -0.1671, -0.1956],[0.1887, 0.1692, 0.1872]]
+        # bound = [[-0.1886, -0.1671, -0.1956*0.6],[0.1887, 0.1692, 0.1872*0.6]]
         bound = torch.Tensor(bound).to(pts)
         # Local Generators
         sigmas_3d = []
@@ -556,12 +565,12 @@ class SemanticGenerator(nn.Module):
             local_latent = latent[:, i *
                                   self.local_layers:(i+1)*self.local_layers]
             feat, depth, sigma = self.local_nets[i](x, local_latent)
+            if i == 1:
+                face_depth = depth
+            if i > 1:
+                depth = face_depth + depth
             weight = torch.arange(self.coarse_size//2).reshape(1,1,self.coarse_size//2,1,1).repeat(depth.shape[0],depth.shape[1], 1, depth.shape[2],depth.shape[3]).to(depth.device)
-            # if i == 1:
-            #     face_depth = depth
-            # if i > 1:
-            #     depth = face_depth + depth
-            weight = torch.exp(-torch.square(weight - depth.unsqueeze(2)))
+            weight = torch.exp(-2*torch.square(weight - depth.unsqueeze(2)))
             feat_3d = weight*feat.unsqueeze(2)
             sigma_3d = weight*sigma.unsqueeze(2)
             # local_sigma = interpolate_feature_3d(pts, sigma_3d,bound)
@@ -573,14 +582,24 @@ class SemanticGenerator(nn.Module):
         sigma = sum(sigmas_3d)
         feat = sum(feats_3d)
         # sample_sigmas = torch.cat(sample_sigmas, dim=1)
-        feat_comp, ret_weight, pts_all = self.volumegan_render(torch.cat([sigma,feat],dim=1), ps_results, bound)
+        feat_comp, ret_weight, pts_all = self.volumegan_render(torch.cat([sigma,feat],dim=1), ps_results, bound, sample_model=sample_model)
+        if sample_model == 1:
+            numd = d*2
+        elif sample_model == 0:
+            numd = d*3
+        else:
+            numd = d + d//2
         for i in range(self.n_local):
             local_sigma = interpolate_feature_3d(pts_all, sigmas_3d[i],bound)
-            sample_sigma = rearrange(local_sigma, 'bs c (h w numd) -> bs c h w numd',h=h, w=w, numd=2*d)
+            sample_sigma = rearrange(local_sigma, 'bs c (h w numd) -> bs c h w numd',h=h, w=w, numd=numd)
             sample_sigmas.append(sample_sigma)
         sample_sigmas = torch.cat(sample_sigmas, dim=1)
-        # sample_sigmas = torch.sum(sample_sigmas*ret_weight, dim=-1)
-        sample_sigmas = torch.sum(sample_sigmas, dim=-1)
+        # ret_weight = F.softmax(ret_weight, dim=-1)
+        if pre_train:
+            sample_sigmas = torch.sum(sample_sigmas, dim=-1)
+        else:
+            sample_sigmas = torch.sum(sample_sigmas*ret_weight, dim=-1)
+        # sample_sigmas = torch.sum(sample_sigmas, dim=-1)
         seg_coarse = F.softmax(sample_sigmas, dim=1)
         # feats_2d = []
         # depths = []
@@ -607,14 +626,14 @@ class SemanticGenerator(nn.Module):
 
         skip_seg = seg_coarse if self.residual_refine else None
         rgb, seg = self.render_net(
-            feat_comp, noise=noise, randomize_noise=randomize_noise, skip_rgb=None, skip_seg=skip_seg)
+            feat_comp.contiguous(), noise=noise, randomize_noise=randomize_noise, skip_rgb=None, skip_seg=skip_seg.contiguous())
 
         if return_latents:
             return rgb, latent
         elif return_coarse:
             return rgb, seg_coarse
         elif return_all:
-            return rgb, seg, seg_coarse, [sample_sigmas[:,i:i+1] for i in range(self.n_local)], latent
+            return rgb, seg, seg_coarse, [seg_coarse[:,i:i+1] for i in range(self.n_local)], latent
         else:
             return rgb, seg
 

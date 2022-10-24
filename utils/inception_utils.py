@@ -261,7 +261,7 @@ def accumulate_inception_activations(sample, net, num_inception_images=50000):
             pool += [pool_val]
             logits += [F.softmax(logits_val, 1)]
             count = torch.cat(logits, 0).shape[0]
-            if count % 2000 == 0:
+            if count % 100 == 0:
                 print(f"{count}/{num_inception_images}")
 
     return torch.cat(pool, 0), torch.cat(logits, 0)
@@ -323,13 +323,14 @@ def prepare_inception_metrics(dataset, parallel, no_fid=False):
 
     return get_inception_metrics
 
-def sample_gema(g_ema, device, truncation, mean_latent, batch_size):  
+def sample_gema(g_ema, device, truncation, mean_latent, batch_size, num_steps=12):  
     with torch.no_grad():
         g_ema.eval()
-
+        ps_kwargs = {}
+        ps_kwargs['num_steps'] = num_steps
         sample_z = torch.randn(batch_size, 512, device=device)
 
-        samples = g_ema([sample_z], truncation=truncation, truncation_latent=mean_latent)
+        samples = g_ema([sample_z], truncation=truncation, truncation_latent=mean_latent, ps_kwargs=ps_kwargs)
         
         sample = samples[0]
         
