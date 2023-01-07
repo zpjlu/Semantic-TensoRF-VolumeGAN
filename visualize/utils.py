@@ -48,15 +48,24 @@ def generate_img(model, styles, mean_latent=None, truncation=1.0, batch_size=16,
     images = torch.cat(images,0)
     return tensor2image(images)
 
-def generate(model, styles, mean_latent=None, truncation=1.0, batch_size=16, ps_kwargs=dict(), *args, **kwargs):
+def generate(model, styles, mean_latent=None, truncation=1.0, batch_size=16, return_sigma=False, input_sigmas=None, input_depths=None, *args, **kwargs):
     images, segs = [], []
     for head in range(0, styles.size(0), batch_size):
-        images_, segs_ = model([styles[head:head+batch_size]], input_is_latent=True,
-                                    truncation=truncation, truncation_latent=mean_latent, ps_kwargs=ps_kwargs, *args, **kwargs)
+        if return_sigma:
+            images_, segs_, sigmas, depths = model([styles[head:head+batch_size]], input_is_latent=True,
+                                    truncation=truncation, truncation_latent=mean_latent, 
+                                    return_sigma=return_sigma, input_sigmas=input_sigmas, input_depths=input_depths,*args, **kwargs)
+        else:
+            images_, segs_ = model([styles[head:head+batch_size]], input_is_latent=True,
+                                        truncation=truncation, truncation_latent=mean_latent, 
+                                        return_sigma=return_sigma, input_sigmas=input_sigmas, input_depths=input_depths,*args, **kwargs)
         images.append(images_.detach().cpu())
         segs.append(segs_.detach().cpu())
     images, segs = torch.cat(images,0), torch.cat(segs,0)
-    return tensor2image(images), tensor2seg(segs)
+    if return_sigma:
+        return tensor2image(images), tensor2seg(segs), sigmas, depths
+    else:
+        return tensor2image(images), tensor2seg(segs)
 
 def tensor2image(tensor):
     images = tensor.cpu().clamp(-1,1).permute(0,2,3,1).numpy()

@@ -36,7 +36,7 @@ if __name__ == '__main__':
         help='choose the type of the render results')
     parser.add_argument('--outdir', type=str, default='./results/samples/', 
         help="path to the output directory")
-    parser.add_argument('--batch', type=int, default=8, help="batch size for inference")
+    parser.add_argument('--batch', type=int, default=2, help="batch size for inference")
     parser.add_argument("--sample", type=int, default=20,
         help="number of samples to be generated",)
     parser.add_argument("--truncation", type=float, default=0.7, help="truncation ratio")
@@ -96,7 +96,7 @@ if __name__ == '__main__':
                 ps_kwargs['vertical_stddev'] = 0
                 ps_kwargs['horizontal_mean'] = yaw
                 ps_kwargs['vertical_mean'] = pitch
-                ps_kwargs['num_steps'] = 36
+                ps_kwargs['num_steps'] = 96
                 images, segs = generate(model, styles, mean_latent=mean_latent, batch_size=args.batch, randomize_noise=False, ps_kwargs=ps_kwargs)
                 for sidx, (sub_frame, image) in enumerate(zip(sub_frames, images)):
                     sub_frame.append(image)

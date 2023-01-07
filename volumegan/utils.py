@@ -29,7 +29,6 @@ def get_grid_coords(points, bounds):
     bounds = bounds[None]
     min_xyz = bounds[:, :1]
     points = points - min_xyz
-    a = torch.amin(points)
     # convert the voxel coordinate to [-1, 1]
     size = bounds[:, 1] - bounds[:, 0]
     points = (points / size[:, None]) * 2 - 1
@@ -328,5 +327,21 @@ def interpolate_feature_3d(points, volume, bounds):
     #                                padding_mode='zeros',
     #                                align_corners=True)
     point_features = grid_sample_3d(volume, grid_coords)
+    point_features = point_features[:, :, 0, 0]
+    return point_features
+
+def interpolate_feature_2d(points, volume, bounds):
+    """
+    points: batch_size, num_point, 3
+    volume: batch_size, num_channel, d, h, w
+    bounds: 2, 3
+    """
+    grid_coords = get_grid_coords(points, bounds)
+    grid_coords = grid_coords[:, None, None]
+    # point_features = F.grid_sample(volume,
+    #                                grid_coords,
+    #                                padding_mode='zeros',
+    #                                align_corners=True)
+    point_features = grid_sample_2d(volume, grid_coords[...,:2])
     point_features = point_features[:, :, 0, 0]
     return point_features

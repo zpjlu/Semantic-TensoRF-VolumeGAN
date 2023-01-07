@@ -3,11 +3,11 @@
 
 from argparse import RawDescriptionHelpFormatter
 import torch
-
+import torch.nn.functional as F
 from .renderer import renderer
 
 __all__ = ['HierarchicalSampling']
-
+_CLAMP_MODE = ['softplus', 'relu', 'mipnerf']
 class HierarchicalSampling(object):
     """Hierarchically samples the points according to the coarse results.
 
@@ -78,8 +78,7 @@ class HierarchicalSampling(object):
             ray_dirs = ray_dirs.reshape(batch_size, num_rays, -1)
 
         # Get the importance of all points
-        renderer_results = renderer(rgbs=coarse_rgbs,
-                                          sigmas=coarse_sigmas,
+        renderer_results = self.nerf_weight(sigmas=coarse_sigmas,
                                           pts_z=pts_z,
                                           noise_std=noise_std,
                                           last_back=self.last_back,
@@ -90,7 +89,7 @@ class HierarchicalSampling(object):
                                           max_depth=self.max_depth,
                                           num_per_group=self.num_per_group)
         # ret_weight = renderer_results['weights']
-        weights = renderer_results['weights'].reshape(batch_size * num_rays, num_steps) + 1e-5
+        weights = renderer_results.reshape(batch_size * num_rays, num_steps) + 1e-5
 
         # Importance sampling
         pts_z = pts_z.reshape(batch_size * num_rays, num_steps)
@@ -100,7 +99,7 @@ class HierarchicalSampling(object):
         elif sample_model == 0:
             num_steps = num_steps*2
         else:
-            num_steps = num_steps//2
+            num_steps = num_steps//5
         fine_pts_z = self.sample_pdf(pts_z_mid,
                                       weights[:, 1:-1],
                                       num_steps,
@@ -123,7 +122,89 @@ class HierarchicalSampling(object):
 
         return results #, ret_weight.reshape(batch_size, H, W, num_steps, 1) 
 
+    def nerf_weight(self,
+                sigmas,
+                pts_z,
+                noise_std,
+                last_back=False,
+                white_back=False,
+                clamp_mode=None,
+                render_mode=None,
+                fill_mode=None,
+                max_depth=None,
+                num_per_group=None):
+        """ Integrate the values along the ray.
 
+        Args:
+            rgbs: （batch_size, H, W, num_steps, 3) or (batch_size, num_rays, num_steps, 3)
+            sigmas: （batch_size, H, W, num_steps, 1) or (batch_size, num_rays, num_steps, 1)
+            pts_z: (batch_size, H, W, num_steps, 1) or (batch_size, num_rays, num_steps, 1)
+            noise_std: 
+        
+        Returns:
+            rgb: (batch_size, H, W, 3) or (batch_size, num_rays, 3)
+            depth: (batch_size, H, W, 1) or (batch_size, num_rays, 1)
+            weights: (batch_size, H, W, num_steps, 1) or (batch_size, num_rays, num_steps, 1)
+            alphas: (batch_size, H, W, 1) or (batch_size, num_rays, 1)
+        """
+        num_dims = sigmas.ndim
+        assert num_dims in [4, 5]
+        assert num_dims == pts_z.ndim
+
+        if num_dims == 4:
+            batch_size, num_rays, num_steps = sigmas.shape[:3]
+        else:
+            batch_size, H, W, num_steps = sigmas.shape[:4]
+            sigmas = sigmas.reshape(batch_size, H * W, num_steps, sigmas.shape[-1])
+            pts_z = pts_z.reshape(batch_size, H * W, num_steps, pts_z.shape[-1])
+
+        if num_per_group is None:
+            num_per_group = num_steps
+        assert num_steps % num_per_group== 0
+
+        # Get deltas for rendering.
+        deltas = pts_z[:, :, 1:] - pts_z[:, :, :-1]
+        if max_depth is not None:
+            delta_inf = max_depth - pts_z[:, :, -1:]
+        else:
+            delta_inf = 1e10 * torch.ones_like(deltas[:, :, :1])
+        deltas = torch.cat([deltas, delta_inf], -2)
+        if render_mode == 'no_dist':
+            deltas[:] = 1
+        
+        # Get alpha
+        noise = torch.randn(sigmas.shape, device=sigmas.device) * noise_std
+        if clamp_mode == 'softplus':
+            alphas = 1-torch.exp(-deltas * (F.softplus(sigmas + noise)))
+        elif clamp_mode == 'relu':
+            alphas = 1 - torch.exp(-deltas * (F.relu(sigmas + noise)))
+        elif clamp_mode == 'mipnerf':
+            alphas = 1 - torch.exp(-deltas * (F.softplus(sigmas + noise - 1)))
+        else:
+            raise ValueError(f'Invalid clamping mode: `{clamp_mode}`!\n'
+                            f'Types allowed: {list(_CLAMP_MODE)}.')
+
+        # Get accumulated alphas
+        alphas = alphas.reshape(alphas.shape[:2] + (num_steps//num_per_group, num_per_group, alphas.shape[-1])) 
+        alphas_shifted = torch.cat([torch.ones_like(alphas[:, :, :, :1]), 1 - alphas + 1e-10], -2) 
+        cum_alphas_shifted = torch.cumprod(alphas_shifted, -2)
+
+        # Get weights
+        weights = alphas * cum_alphas_shifted[:, :, :, :-1]
+        weights_sum = weights.sum(3)
+
+        pts_z = pts_z.reshape(pts_z.shape[:2] + (num_steps//num_per_group, num_per_group, pts_z.shape[-1])) 
+
+        if last_back:
+            weights[:, :, :, -1] += (1 - weights_sum)
+
+        weights_final = weights.reshape(alphas.shape[:2]+(num_steps, 1))
+        if num_dims == 5:
+            weights_final = weights_final.reshape(batch_size, H, W, num_steps, 1)
+        else:
+            weights_final = weights_final.reshape(batch_size, num_rays, num_steps, 1)
+        
+        return weights_final
 
     def sample_pdf(self, bins, weights, N_importance, det=False, eps=1e-5):
         """Sample @N_importance samples from @bins with distribution defined by @weights.

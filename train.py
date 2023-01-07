@@ -246,19 +246,54 @@ def train(args, ckpt_dir, loader, generator, discriminator, g_optim, d_optim, g_
 
         noise = mixing_noise(args.batch, args.latent, args.mixing, device)
         
-        fake_img, fake_seg, fake_seg_coarse, _, _ = generator(noise, return_all=True, pre_train=pre_train)
+        fake_img, fake_seg, fake_seg_coarse, depths = generator(noise, depth_reg=True, pre_train=pre_train)
+        # sigma_loss = torch.square(sigmas).mean()
+        # fake_img, fake_seg, fake_seg_coarse, _, _ = generator(noise, return_all=True, pre_train=pre_train)
+        # mid_sigmas = sigmas[:,:,1:-1,1:-1]
+        # reg_sigmas = []
+        # reg_sigmas.append(sigmas[:,:,:-2,:-2])
+        # reg_sigmas.append(sigmas[:,:,1:-1,:-2])
+        # reg_sigmas.append(sigmas[:,:,2:,:-2])
+        # reg_sigmas.append(sigmas[:,:,:-2,1:-1])
+        # reg_sigmas.append(sigmas[:,:,2:,1:-1])
+        # reg_sigmas.append(sigmas[:,:,:-2,2:])
+        # reg_sigmas.append(sigmas[:,:,1:-1,2:])
+        # reg_sigmas.append(sigmas[:,:,2:,2:])
+
+        # sigma_loss = [torch.square(mid_sigmas - reg_sigmas[i]) for i in range(8)]
+        # sigma_loss = torch.stack(sigma_loss,dim=1).mean()
+        # sigmas = F.softmax(sigmas,dim=1)
+        # sigma_loss = torch.square(sigmas)*torch.square(sigmas-1)
+        # sigma_loss = sigma_loss.mean()*100
+
+        mid_depths = depths[:,:,1:-1,1:-1]
+        reg_depths = []
+        reg_depths.append(depths[:,:,:-2,:-2])
+        reg_depths.append(depths[:,:,1:-1,:-2])
+        reg_depths.append(depths[:,:,2:,:-2])
+        reg_depths.append(depths[:,:,:-2,1:-1])
+        reg_depths.append(depths[:,:,2:,1:-1])
+        reg_depths.append(depths[:,:,:-2,2:])
+        reg_depths.append(depths[:,:,1:-1,2:])
+        reg_depths.append(depths[:,:,2:,2:])
+
+        depth_loss = [torch.square(mid_depths - reg_depths[i]) for i in range(8)]
+        depth_loss = torch.stack(depth_loss,dim=1).mean()
+
         fake_pred = discriminator(fake_img, fake_seg)
         g_loss = g_nonsaturating_loss(fake_pred)
 
         # segmentation mask loss
         fake_seg_downsample = F.adaptive_avg_pool2d(fake_seg, fake_seg_coarse.shape[2:4])
         mask_loss = torch.square(fake_seg_coarse - fake_seg_downsample).mean()
-
+    
         loss_dict['g'] = g_loss
         loss_dict['mask'] = mask_loss
-
+        loss_dict['depth'] = depth_loss
+        # loss_dict['sigma'] = sigma_loss
         generator.zero_grad()
-        (g_loss + args.lambda_mask * mask_loss).backward()
+        # (g_loss + args.lambda_mask * mask_loss + depth_loss).backward()
+        (g_loss + args.lambda_mask * mask_loss + 0.1 * depth_loss).backward()
         g_optim.step()
 
         g_regularize = args.path_regularize > 0 and i % args.g_reg_every == 0
@@ -310,6 +345,8 @@ def train(args, ckpt_dir, loader, generator, discriminator, g_optim, d_optim, g_
         fake_score_val = loss_reduced['fake_score'].mean().item()
         path_length_val = loss_reduced['path_length'].mean().item()
         mask_loss_val = loss_reduced['mask'].mean().item()
+        depth_loss_val = loss_reduced['depth'].mean().item()
+        # sigma_loss_val = loss_reduced['sigma'].mean().item()
         batch_time = time.time() - tic
 
         if get_rank() == 0:
@@ -319,7 +356,9 @@ def train(args, ckpt_dir, loader, generator, discriminator, g_optim, d_optim, g_
                         f"real: {real_score_val:.4f}; fake: {fake_score_val:.4f}; "
                         f"r1_img: {r1_img_val:.4f}; r1_seg: {r1_seg_val:.4f}; "
                         f"path: {path_loss_val:.4f}; mean path: {mean_path_length_avg:.4f}; "
-                        f"mask: {mask_loss_val:.4f}; time: {batch_time:.2f}"
+                        f"mask: {mask_loss_val:.4f}; "
+                        f"depth: {depth_loss_val:.4f}; "
+                        # f"sigma: {sigma_loss_val:.4f}; time: {batch_time:.2f}; "
                     )
 
                 # write to tensorboard
@@ -352,7 +391,7 @@ def train(args, ckpt_dir, loader, generator, discriminator, g_optim, d_optim, g_
                     save_sample_image("sample", "mask", sample_mask, i, writer, normalize=True, value_range=(0,255))
                     save_sample_image("sample", "mask_coarse", sample_mask_coarse, i, writer, normalize=True, value_range=(0,255))
                     for j in range(len(depths)):
-                        save_sample_image("depth", f"depth_{j:02d}", depths[j], i, writer, normalize=True)
+                        save_sample_image("depth", f"depth_{j:02d}", depths[j], i, writer, normalize=False)
 
                 
             if i % args.save_every == 0 and i > args.start_iter:
@@ -408,9 +447,9 @@ if __name__ == '__main__':
     parser.add_argument('--aug', action='store_true', help='augmentation')
 
     # Semantic StyleGAN
-    parser.add_argument('--local_layers', type=int, default=10, help="number of layers in local generators")
-    parser.add_argument('--base_layers', type=int, default=0, help="number of layers with shared coarse structure code")
-    parser.add_argument('--depth_layers', type=int, default=6, help="number of layers before outputing pseudo-depth map")
+    parser.add_argument('--local_layers', type=int, default=9, help="number of layers in local generators")
+    parser.add_argument('--base_layers', type=int, default=1, help="number of layers with shared coarse structure code")
+    parser.add_argument('--depth_layers', type=int, default=5, help="number of layers before outputing pseudo-depth map")
     parser.add_argument('--local_channel', type=int, default=64, help="number of channels in local generators")
     parser.add_argument('--coarse_channel', type=int, default=256, help="number of channels in coarse feature map")
     parser.add_argument('--coarse_size', type=int, default=64, help="size of the coarse feature map and segmentation mask")

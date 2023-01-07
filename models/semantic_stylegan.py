@@ -148,30 +148,63 @@ class LocalGenerator(nn.Module):
         self.use_depth = use_depth
         self.detach_texture = detach_texture
         self.linears = nn.ModuleList()
-        for _ in range(n_layers):
+        self.weight = StyledConv(
+            in_channel, 1, 1, style_dim, inject_noise=False)
+        self.bias = StyledConv(
+            in_channel, 1, 1, style_dim, inject_noise=False)
+        for i in range(n_layers - 1):
+            # if i == 0:
+            #     self.linears.append(StyledConv(
+            #     in_channel, in_channel, 1, style_dim, inject_noise=False))
+            # else:
             self.linears.append(StyledConv(
-                in_channel, hidden_channel, 1, style_dim, inject_noise=False))
+            in_channel, hidden_channel, 1, style_dim, inject_noise=False))
             in_channel = hidden_channel
         self.to_feat = ToRGB(hidden_channel, out_channel, style_dim)
-        self.to_sigma = ToRGB(hidden_channel, 1, style_dim, feat_size=feat_size)
+        self.depth = depth
         if self.use_depth:
             self.to_depth = ToRGB(hidden_channel, 1, style_dim, bias=depth, feat_size=feat_size)
+        self.to_sigma = ToRGB(hidden_channel, 1, style_dim, feat_size=1)
 
-    def forward(self, x, latent):
+    def forward(self, x, latent, pre_train=False):
         # depth = torch.ones(x.size(0), 1, x.size(2), x.size(3)).to(x.device)*1e-8
+        weight = self.weight(x, latent[:, 0])
+        bias = self.bias(x, latent[:, 0])
+        x = weight*x + bias
         for i, linear in enumerate(self.linears):
-            x = linear(x, latent[:, i])
+            
+            x = linear(x, latent[:, i+1])
             # if self.use_depth and i == self.depth_layers-1:
-            if i == self.depth_layers-1:
+            # if i == self.depth_layers-1:
+            #     if self.use_depth:
+            #         # depth = torch.clamp(self.to_depth(x, None), 0, 1)
+            #         depth = self.to_depth(x, None)
+            #         sigma = F.relu(self.to_sigma(x, None))
+            #         if self.detach_texture and i < self.n_layers-1:
+            #             x = x.detach()
+            #     else:
+            #         depth = torch.ones(x.size(0), 1, x.size(2), x.size(3)).to(x.device)*5
+            #         sigma = torch.ones(x.size(0), 1, x.size(2), x.size(3)).to(x.device)
+            if i == self.depth_layers-2:
                 if self.use_depth:
                     # depth = torch.clamp(self.to_depth(x, None), 0, 1)
                     depth = self.to_depth(x, None)
                     if self.detach_texture and i < self.n_layers-1:
                         x = x.detach()
+                    # sigma = F.relu(self.to_sigma(x, None))
                 else:
-                    depth = torch.zeros(x.size(0), 1, x.size(2), x.size(3)).to(x.device)
+                    a = torch.arange(64,device=x.device)
+                    b = torch.arange(64,device=x.device)
+                    grid_x, grid_y =torch.meshgrid(a, b)
+                    depth=(torch.square(grid_x-31.5) + torch.square(grid_y-31.5))*0.003+3
+                    depth = depth.unsqueeze(0)
+                    depth = depth.unsqueeze(0)
+                    depth = depth.repeat(x.shape[0], 1, 1, 1)
+                    # sigma = torch.ones(x.size(0), 1, x.size(2), x.size(3)).to(x.device)*100
                 sigma = F.relu(self.to_sigma(x, None))
         feat = self.to_feat(x, None)
+        # if pre_train:
+        #     depth = torch.ones(x.size(0), 1, x.size(2), x.size(3)).to(x.device)*self.depth
         return feat, depth, sigma
 
 
@@ -259,9 +292,9 @@ class SemanticGenerator(nn.Module):
                              ray_end=1.2,
                              radius=1,
                              horizontal_mean=PI/2,
-                             horizontal_stddev=0.4,
+                             horizontal_stddev=0.3,
                              vertical_mean=PI/2,
-                             vertical_stddev=0.2,
+                             vertical_stddev=0.155,
                              camera_dist='gaussian',
                              fov=12,  # TODO:需要根据数据集调整这一系列参数
                              perturb_mode=None),
@@ -298,7 +331,8 @@ class SemanticGenerator(nn.Module):
         self.local_nets = nn.ModuleList()
         depths = [5, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 ]
         for i in range(0, self.n_local):
-            use_depth = True  # disable pseudo-depth for background generator   #TODO:背景不需要深度
+            # use_depth = True
+            use_depth = i > 0
             self.local_nets.append(LocalGenerator(local_channel, coarse_channel, local_channel, style_dim,
                                                   n_layers=local_layers, depth_layers=depth_layers, use_depth=use_depth, detach_texture=detach_texture, feat_size=coarse_size, depth=depths[i]))
             # self.local_nets.append(NerfSynthesis(use_depth, self.depth_layers))
@@ -493,7 +527,7 @@ class SemanticGenerator(nn.Module):
         elif sample_model == 0:
             hs_d = d*2
         else:
-            hs_d = d//2
+            hs_d = d//5
         hs_feat = rearrange(hs_feat, 'bs c (h w numd) -> bs h w numd c',h=h, w=w, numd=hs_d)
         feats_all = torch.cat([hs_feat, feat_pro], dim=-2)
         pts_z_all = torch.cat((hs_results['pts_z'], ps_results['pts_z']), dim=-2)
@@ -532,6 +566,10 @@ class SemanticGenerator(nn.Module):
                 return_all=False,
                 pre_train=False,
                 sample_model=1,
+                return_sigma=False,
+                input_sigmas=None,
+                input_depths=None,
+                depth_reg=False,
                 ps_kwargs = dict()
                 ):
         if not input_is_latent:
@@ -560,35 +598,53 @@ class SemanticGenerator(nn.Module):
         sigmas_3d = []
         feats_3d = []
         sample_sigmas = []
+        # sigmas = []
+        depths = []
+        weights = []
+        feats = []
         for i in range(self.n_local):
             x = self.pos_embed(coords[i])
             local_latent = latent[:, i *
                                   self.local_layers:(i+1)*self.local_layers]
-            feat, depth, sigma = self.local_nets[i](x, local_latent)
+            feat, depth, sigma = self.local_nets[i](x, local_latent, pre_train)
             if i == 1:
                 face_depth = depth
             if i > 1:
                 depth = face_depth + depth
+            if composition_mask is not None:
+                sigma = sigma*composition_mask[:,i]
+            # sigmas.append(sigma)
+            depths.append(depth)
+            if input_depths is not None:
+                depth = input_depths[i].repeat(feat.shape[0],1,1,1)
+                sigma = input_sigmas[i].repeat(feat.shape[0],1,1,1)
             weight = torch.arange(self.coarse_size//2).reshape(1,1,self.coarse_size//2,1,1).repeat(depth.shape[0],depth.shape[1], 1, depth.shape[2],depth.shape[3]).to(depth.device)
             weight = torch.exp(-2*torch.square(weight - depth.unsqueeze(2)))
-            feat_3d = weight*feat.unsqueeze(2)
+            weights.append(weight)
+            feats.append(feat)
+            # feat = feat*sigma
             sigma_3d = weight*sigma.unsqueeze(2)
+            sigmas_3d.append(sigma_3d)
+        sigma_weight = F.softmax(torch.stack(sigmas_3d,dim=1), dim=1)
+        for i in range(self.n_local):
+            weight = weights[i]*sigma_weight[:,i]
+            feat_3d = weight*feats[i].unsqueeze(2)
+            # feat_3d = weight*feat.unsqueeze(2)
             # local_sigma = interpolate_feature_3d(pts, sigma_3d,bound)
             # sample_sigma = rearrange(local_sigma, 'bs c (h w numd) -> bs c h w numd',h=h, w=w, numd=d)
             # sample_sigma = torch.sum(sample_sigma,dim=-1,keepdim=False)
             feats_3d.append(feat_3d)
-            sigmas_3d.append(sigma_3d)
             # sample_sigmas.append(sample_sigma)
-        sigma = sum(sigmas_3d)
-        feat = sum(feats_3d)
+        sigma_nerf = sum(sigmas_3d)
+        feat_nerf = sum(feats_3d)
         # sample_sigmas = torch.cat(sample_sigmas, dim=1)
-        feat_comp, ret_weight, pts_all = self.volumegan_render(torch.cat([sigma,feat],dim=1), ps_results, bound, sample_model=sample_model)
+        feat_comp, ret_weight, pts_all = self.volumegan_render(torch.cat([sigma_nerf,feat_nerf],dim=1), ps_results, bound, sample_model=sample_model)
         if sample_model == 1:
             numd = d*2
         elif sample_model == 0:
             numd = d*3
         else:
-            numd = d + d//2
+            numd = d + d//5
         for i in range(self.n_local):
             local_sigma = interpolate_feature_3d(pts_all, sigmas_3d[i],bound)
             sample_sigma = rearrange(local_sigma, 'bs c (h w numd) -> bs c h w numd',h=h, w=w, numd=numd)
@@ -622,8 +678,8 @@ class SemanticGenerator(nn.Module):
         #                                     noise_std=0)['depth'].permute(0,3,1,2)
         #     depths.append(local_depth)
         # seg_coarse = F.softmax(torch.cat(depths,dim=1),dim=1)
+        ret_depths = seg_coarse
         seg_coarse = 2*seg_coarse-1  # normalize to [-1,1]
-
         skip_seg = seg_coarse if self.residual_refine else None
         rgb, seg = self.render_net(
             feat_comp.contiguous(), noise=noise, randomize_noise=randomize_noise, skip_rgb=None, skip_seg=skip_seg.contiguous())
@@ -633,7 +689,11 @@ class SemanticGenerator(nn.Module):
         elif return_coarse:
             return rgb, seg_coarse
         elif return_all:
-            return rgb, seg, seg_coarse, [seg_coarse[:,i:i+1] for i in range(self.n_local)], latent
+            return rgb, seg, seg_coarse, [ret_depths[:,i:i+1] for i in range(self.n_local)], latent
+        # elif return_sigma:
+        #     return rgb, seg, sigmas, depths
+        elif depth_reg:
+            return rgb, seg, seg_coarse, torch.cat(depths, dim=1) #, [ret_depths[:,i:i+1] for i in range(self.n_local)], latent , torch.cat(sigmas,dim=1), torch.cat(depths, dim=1)
         else:
             return rgb, seg
 

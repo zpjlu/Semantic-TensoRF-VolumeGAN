@@ -10,6 +10,12 @@ data/
 *.txt
 checkpoint*/
 test/
+components/
+video/
+bk/
+output/
+*2.py
+*3.py
 # Distribution / packaging
 .Python
 build/

@@ -23,10 +23,11 @@ import imageio
 import torch
 from models import make_model
 import matplotlib.pyplot as plt
-
+from math import pi as PI
 from visualize.utils import tensor2image, tensor2seg
 
 component_dict_celeba = {
+    0:  "back",
     1:  "face",
     2:  "eye",
     3:  "eyebrow",
@@ -54,7 +55,7 @@ if __name__ == '__main__':
         help="path to the latent numpy")
     parser.add_argument('--outdir', type=str, default='./results/components/', 
         help="path to the output directory")
-    parser.add_argument('--batch', type=int, default=8, help="batch size for inference")
+    parser.add_argument('--batch', type=int, default=4, help="batch size for inference")
     parser.add_argument("--sample", type=int, default=10,
         help="number of latent samples to be interpolated")
     parser.add_argument("--truncation", type=float, default=0.7, help="truncation ratio")
@@ -77,7 +78,12 @@ if __name__ == '__main__':
     model.eval()
     model.load_state_dict(ckpt['g_ema'])
     mean_latent = model.style(torch.randn(args.truncation_mean, model.style_dim, device=args.device)).mean(0)
-
+    ps_kwargs = {}
+    ps_kwargs['horizontal_stddev'] = 0
+    ps_kwargs['vertical_stddev'] = 0
+    ps_kwargs['horizontal_mean'] = PI/2
+    ps_kwargs['vertical_mean'] = PI/2
+    ps_kwargs['num_steps'] = 96
     print("Generating images...")
     if args.dataset_name == "celeba":
         component_dict = component_dict_celeba
@@ -99,9 +105,10 @@ if __name__ == '__main__':
             if not os.path.exists(sample_outdir):
                 os.makedirs(sample_outdir)
             for component_index, component_name in component_dict.items():
+                # composition_mask = torch.zeros(1, model.n_local, device=args.device)
                 composition_mask[:,component_index] = 1
                 image, seg, seg_coarse, depths, _ = model([style_inputs], input_is_latent=True, randomize_noise=False,
-                                            composition_mask=composition_mask, truncation_latent=mean_latent, return_all=True)
+                                            composition_mask=composition_mask, truncation_latent=mean_latent, return_all=True, ps_kwargs=ps_kwargs)
                 image = tensor2image(image)
                 seg = tensor2seg(seg)
                 seg_coarse = tensor2seg(seg_coarse)

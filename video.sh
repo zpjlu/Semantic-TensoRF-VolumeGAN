@@ -1,3 +1,3 @@
 python generate_video.py \
-test/1021_2/050000.pt \
---outdir test/videos/1021_2_50000
+test/1127_3/ckpt/200000.pt \
+--outdir video/1127_3_20 \

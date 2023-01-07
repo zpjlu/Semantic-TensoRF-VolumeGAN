@@ -26,6 +26,34 @@ from models import make_model
 from visualize.utils import generate, cubic_spline_interpolate
 from math import pi as PI
 
+# latent_dict_celeba = {
+#     2:  "bcg_1",
+#     # 3:  "bcg_2",
+#     4:  "face_shape",
+#     # 5:  "face_texture",
+#     6:  "eye_shape",
+#     # 7:  "eye_texture",
+#     8:  "eyebrow_shape",
+#     # 9:  "eyebrow_texture",
+#     10: "mouth_shape",
+#     # 11: "mouth_texture",
+#     12: "nose_shape",
+#     # 13: "nose_texture",
+#     14: "ear_shape",
+#     # 15: "ear_texture",
+#     16: "hair_shape",
+#     # 17: "hair_texture",
+#     18: "neck_shape",
+#     # 19: "neck_texture",
+#     20: "cloth_shape",
+#     # 21: "cloth_texture",
+#     # 22: "glass",
+#     # 24: "hat",
+#     # 26: "earing",
+#     # 0:  "coarse_1",
+#     # 1:  "coarse_2",
+# }
+
 latent_dict_celeba = {
     2:  "bcg_1",
     3:  "bcg_2",
@@ -93,7 +121,7 @@ if __name__ == '__main__':
     ps_kwargs['vertical_stddev'] = 0
     ps_kwargs['horizontal_mean'] = PI/2
     ps_kwargs['vertical_mean'] = PI/2
-    ps_kwargs['num_steps'] = 36
+    ps_kwargs['num_steps'] = 96
     print("Generating original image ...")
     with torch.no_grad():
         if args.latent is None:
@@ -104,7 +132,7 @@ if __name__ == '__main__':
         if styles.ndim == 2:
             assert styles.size(1) == model.style_dim
             styles = styles.unsqueeze(1).repeat(1, model.n_latent, 1)
-        images, segs = generate(model, styles, mean_latent=mean_latent, randomize_noise=False, ps_kwargs=ps_kwargs)
+        images, segs, sigmas, depths = generate(model, styles, mean_latent=mean_latent, randomize_noise=False, ps_kwargs=ps_kwargs, return_sigma=True)
         imageio.imwrite(f'{args.outdir}/image.jpeg', images[0])
         imageio.imwrite(f'{args.outdir}/seg.jpeg', segs[0])
 
@@ -124,7 +152,7 @@ if __name__ == '__main__':
             styles_new[:,latent_index-1] = mix_styles[:,latent_index-1]
             styles_new = cubic_spline_interpolate(styles_new, step=args.steps)
             images, segs = generate(model, styles_new, mean_latent=mean_latent, 
-                        randomize_noise=False, batch_size=args.batch, ps_kwargs=ps_kwargs)
+                        randomize_noise=False, batch_size=args.batch, input_sigmas=sigmas, input_depths=depths, ps_kwargs=ps_kwargs)
  
             frames = [np.concatenate((img,seg),1) for (img,seg) in zip(images,segs)]
             imageio.mimwrite(f'{args.outdir}/{latent_index:02d}_{latent_name}.mp4', frames, fps=20)
